@@ -8,6 +8,11 @@
   </head>
   <body>
     <h1>Graph Klipper Stats</h1>
+    <div>
+      <p>This webpage uses the logic of Klipper's <a href="https://github.com/Klipper3d/klipper/blob/master/scripts/graphstats.py" target="_blank">graphstats.py</a> to analyse a <code>klippy.log</code> and display the results in graphs. This is a direct transformation of the Python script and thus based on the original work of Kevin O'Connor. </p>
+      <p>For the sources and license information see <a href="https://github.com/Sineos/sineos.github.io" target="_blank">the GH repository</a></p>
+      <p>Just browse for the <code>klippy.log</code> using below button. Heater(s) for the temperature graph can be chosen with the drop-down</p>
+    </div>
     <input type="file" id="fileInput">
     <label for="fieldSelectHeater">Select a Heater:</label>
     <select id="fieldSelectHeater" onchange="toggleCustomField()">
@@ -35,9 +40,9 @@
       }
 
       function toggleCustomField() {
-        var select = document.getElementById('fieldSelectHeater');
-        var customField = document.getElementById('fieldCustomHeater');
-        var customInput = document.getElementById('inputCustomHeater');
+        const select = document.getElementById('fieldSelectHeater');
+        const customField = document.getElementById('fieldCustomHeater');
+        const customInput = document.getElementById('inputCustomHeater');
         if (select.value === 'custom') {
           customField.style.display = 'block';
           customInput.disabled = false;
@@ -273,7 +278,7 @@
           line: {
             color: 'cyan',
             width: 1,
-            opacity: 0.8
+            opacity: 1.0
           }
         };
         const trace2 = {
@@ -285,9 +290,9 @@
           line: {
             color: 'red',
             width: 1,
-            opacity: 0.8
+            opacity: 0.1
           },
-          yaxis: 'y2'
+          yaxis: 'y'
         };
         const trace3 = {
           x: times,
@@ -300,7 +305,7 @@
             width: 1,
             opacity: 0.3
           },
-          yaxis: 'y3'
+          yaxis: 'y2'
         };
         const layout = {
           title: 'System load utilization',
@@ -312,12 +317,6 @@
             title: 'Load (% of a core)'
           },
           yaxis2: {
-            title: 'Process time',
-            overlaying: 'y',
-            side: 'right',
-            showgrid: false
-          },
-          yaxis3: {
             title: 'Available memory (KB)',
             overlaying: 'y',
             side: 'right',
@@ -450,7 +449,6 @@
             name: `${heater} temp`,
             line: {
               width: 2,
-              color: 'blue'
             }
           });
           if (targets.some(Boolean)) {
@@ -462,7 +460,6 @@
               name: `${heater} target`,
               line: {
                 width: 1,
-                color: 'orange',
                 dash: 'dot'
               }
             });
@@ -477,7 +474,6 @@
               name: `${heater} PWM`,
               line: {
                 width: 1,
-                color: 'green',
                 opacity: 0.5,
                 dash: 'dash'
               }
