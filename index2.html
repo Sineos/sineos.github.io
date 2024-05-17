@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <script language="JavaScript" type="text/javascript" src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="./graphstats.js"></script>
+    <style>
+      #containerHeater {
+        display: flex;
+        align-items: center;
+      }
+
+      #fieldSelectHeater {
+        margin-right: 20px;
+      }
+
+      #containerCustomHeater {
+        display: none;
+      }
+    </style>
+    <title>Graph Klipper Stats</title>
+  </head>
+  <body>
+    <h1>Graph Klipper Stats</h1>
+    <div>
+      <p>This webpage uses the logic of Klipper's <a href="https://github.com/Klipper3d/klipper/blob/master/scripts/graphstats.py" target="_blank">graphstats.py</a> to analyse a <code>klippy.log</code> and display the results in graphs. This is a direct transformation of the Python script and thus based on the original work of Kevin O'Connor. </p>
+      <p>For the sources and license information see <a href="https://github.com/Sineos/sineos.github.io" target="_blank">the GH repository</a>
+      </p>
+      <p>Just browse for the <code>klippy.log</code> using below button. Heater(s) for the temperature graph can be chosen with the drop-down </p>
+    </div>
+    <div>
+      <input type="file" id="fileInput">
+    </div>
+    <div>
+      <input name="buttonProcess" type="button" id="buttonProcess" value="Process Log" />
+    </div>
+    <div id="plotDiv1"></div>
+    <div id="plotDiv2"></div>
+    <div id="plotDiv3"></div>
+    <div id="plotDiv4"></div>
+    <script></script>
+  </body>
+</html>
