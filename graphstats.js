@@ -19,57 +19,87 @@ const APPLY_PREFIX_HEATER = [
 ];
 
 function parseLog(logData) {
-  // console.log('parseLog - passed logData:', logData);
-  const applyPrefixMCU = APPLY_PREFIX_MCU.reduce((acc, p) => ({ ...acc, [p]: 1 }), {});
-  const applyPrefixHeaters = APPLY_PREFIX_HEATER.reduce((acc, p) => ({ ...acc, [p]: 1 }), {});
+  const applyPrefixMCU = APPLY_PREFIX_MCU.reduce((acc, p) => ({ ...acc, [p]: true }), {});
+  const applyPrefixHeaters = APPLY_PREFIX_HEATER.reduce((acc, p) => ({ ...acc, [p]: true }), {});
 
   const lines = logData.split('\n');
-  // console.log('lines:', lines);
   const parsedData = [];
+  const events = { starts: [], shutdowns: [], ntj: [] };
+
+  let pendingEvent = null;
+  let previousSampleTime = null;
+  let timeAdjustment = null;
 
   for (const line of lines) {
     if (line.startsWith('Stats')) {
-      // console.log('line starting with "Stats":', line);
-
       const parts = line.split(' ');
-      const keyparts = {};
-
-      keyparts['MCUs'] = {};
-      keyparts['Heaters'] = {};
-      let prefix = '';
+      const keyparts = { MCUs: {}, Heaters: {} };
+      let currentPrefix = '';
 
       for (let i = 2; i < parts.length; i++) {
         if (!parts[i].includes('=')) {
-          prefix = parts[i].slice(0, -1);
+          currentPrefix = parts[i].slice(0, -1);
+          continue;
         }
 
         const [name, value] = parts[i].split('=');
 
-        if ((name in applyPrefixMCU) && prefix) {
-          if (!keyparts['MCUs'][prefix]) {
-            keyparts['MCUs'][prefix] = {}; // Initialize if it doesn't exist
+        if ((name in applyPrefixMCU) && currentPrefix) {
+          if (!keyparts.MCUs[currentPrefix]) {
+            keyparts.MCUs[currentPrefix] = {};
           }
-          keyparts['MCUs'][prefix][name] = value;
-        } else if ((name in applyPrefixHeaters) && prefix) {
-          if (!keyparts['Heaters'][prefix]) {
-            keyparts['Heaters'][prefix] = {}; // Initialize if it doesn't exist
+          keyparts.MCUs[currentPrefix][name] = value;
+        } else if ((name in applyPrefixHeaters) && currentPrefix) {
+          if (!keyparts.Heaters[currentPrefix]) {
+            keyparts.Heaters[currentPrefix] = {};
           }
-          keyparts['Heaters'][prefix][name] = value;
+          keyparts.Heaters[currentPrefix][name] = value;
         } else {
           keyparts[name] = value;
         }
       }
 
-      if (!keyparts['print_time']) {
-        continue; 
+      if (!keyparts.print_time) {
+        continue;
       }
 
-      keyparts['#sampletime'] = parseFloat(parts[1].slice(0, -1));
+      let sampleTime = parseFloat(parts[1].slice(0, -1));
+
+      if (previousSampleTime !== null && sampleTime < previousSampleTime) {
+        events.ntj.push({ sampleTime: previousSampleTime, message: 'Negative time jump at: ' + previousSampleTime });
+        timeAdjustment = previousSampleTime;
+      }
+
+      // Update previous sample time before adjusting the current sample time
+      previousSampleTime = sampleTime;
+
+      // Adjust sample time if there's a negative time jump
+      if (timeAdjustment) {
+        sampleTime += timeAdjustment;
+      }
+
+      keyparts['#sampletime'] = sampleTime;
+
+      if (pendingEvent) {
+        events[pendingEvent.type].push({ sampleTime, message: pendingEvent.line + ' (before: ' + sampleTime + ')' });
+        pendingEvent = null;
+      }
+
       parsedData.push(keyparts);
+    } else if (line.startsWith('Start printer at') || line.startsWith('=============== Log rollover at')) {
+      pendingEvent = { type: 'starts', line };
+    } else if (line.startsWith('===== Config file =====')) {
+      if (!pendingEvent || pendingEvent.type !== 'starts') {
+        pendingEvent = { type: 'starts', line };
+      }
+    } else if (line.startsWith('Transition to shutdown state:')) {
+      if (previousSampleTime !== null) {
+        events.shutdowns.push({ sampleTime: previousSampleTime + timeAdjustment, message: line + ' (after: ' + previousSampleTime + ')' });
+      }
     }
   }
-  console.log('parseLog - parsedData:', parsedData);
-  return parsedData;
+
+  return { parsedData, events };
 }
 
 
@@ -118,7 +148,7 @@ function findPrintRestarts(data) {
     Object.entries(runoffSamples)
       .flatMap(([startTime, [stall, samples]]) => samples.filter((time) => !stall).map((time) => [time, 1]))
   );
-  console.log(sampleResets);
+  // console.log(sampleResets);
   
   return sampleResets;
 }
@@ -128,10 +158,14 @@ function plotMCU(data, maxBandwidth) {
   const previousSampleTimes = {};
   const negativeTimeDeltas = {};
   const timeJumpOffsets = {}; // Store time jump offsets per MCU
-  const basetime = data[0]['#sampletime'];
-  const sampleResets = findPrintRestarts(data);
+  // console.log(data);
+  // console.log(data.parsedData);
+  const basetime = data.parsedData[0]['#sampletime'];
+  const sampleResets = findPrintRestarts(data.parsedData);
 
-  for (const d of data) {
+  for (const d of data.parsedData) {
+    // console.log(d)
+    // console.log(Object.keys(d.MCUs))
     const mcuPrefixes = Object.keys(d.MCUs);
 
     for (const mcuPrefix of mcuPrefixes) {
@@ -142,7 +176,7 @@ function plotMCU(data, maxBandwidth) {
           loads: [],
           awake: [],
           hostBuffers: [],
-          lastBW: parseFloat(data[0]['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(data[0]['MCUs'][mcuPrefix]['bytes_retransmit'])
+          lastBW: parseFloat(data.parsedData[0]['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(data.parsedData[0]['MCUs'][mcuPrefix]['bytes_retransmit'])
         };
       }
 
@@ -213,6 +247,16 @@ function plotMCU(data, maxBandwidth) {
   const plotDiv1 = document.getElementById('plotDiv1');
 
   plotDiv1.innerHTML = '';
+
+  // Convert event keys to Date objects
+  const eventTimes = Object.keys(data.events).map((eventType) => ({
+    eventType,
+    events: data.events[eventType].map((event) => ({
+      time: new Date(parseFloat(event.sampleTime) * 1000),
+      message: event.message
+    }))
+  }));
+
   for (const mcuPrefix in plotData) {
     // Create traces for this MCU
     const traces = [
@@ -222,7 +266,7 @@ function plotMCU(data, maxBandwidth) {
         name: `Bandwidth - ${mcuPrefix}`,
         type: 'scatter',
         mode: 'lines',
-        line: { color: 'green' }
+        line: { color: 'blue' }
       },
       {
         x: plotData[mcuPrefix].times,
@@ -230,7 +274,7 @@ function plotMCU(data, maxBandwidth) {
         name: `MCU Load - ${mcuPrefix}`,
         type: 'scatter',
         mode: 'lines',
-        line: { color: 'red' }
+        line: { color: 'orange' }
       },
       {
         x: plotData[mcuPrefix].times,
@@ -249,27 +293,12 @@ function plotMCU(data, maxBandwidth) {
         line: { color: 'yellow' }
       }
     ];
-  
-    // Add negative time delta trace (if any)
-    if (negativeTimeDeltas[mcuPrefix]) {
-      traces.push({
-        x: negativeTimeDeltas[mcuPrefix].times,
-        y: negativeTimeDeltas[mcuPrefix].bwDeltas, 
-        name: `Time Jump - ${mcuPrefix}`,
-        type: 'scatter',
-        mode: 'markers',
-        marker: { color: 'black', symbol: 'x' } // Customize marker as needed
-      });
-    }
-  
-    // console.log(traces);
-    // Dynamically create a div for this graph
+
     const plotDiv = document.createElement('div');
 
     plotDiv.id = `plotDiv_${mcuPrefix}`;
     plotDiv1.appendChild(plotDiv);
 
-    // Plotly setup
     const layout = {
       title: `MCU Bandwidth and Load Utilization - ${mcuPrefix}`,
       xaxis: { tickformat: '%H:%M', title: 'Time' },
@@ -277,42 +306,77 @@ function plotMCU(data, maxBandwidth) {
       font: { size: 12 },
       legend: { orientation: 'h' },
       grid: { columns: 1, pattern: 'independent', rows: 1 },
-      annotations: [] // Initialize annotations array
+      annotations: [], // Initialize shapes array
+      shapes: [] // Initialize shapes array
     };
 
-    for (const mcuPrefix in negativeTimeDeltas) {
-      const annotation = {
-        x: negativeTimeDeltas[mcuPrefix].times[0], // Assuming the first time point
-        y: negativeTimeDeltas[mcuPrefix].bwDeltas[0], // Assuming the first bandwidth delta
-        text: 'NTJ', // Annotation text
-        showarrow: true,
-        arrowhead: 2,
-        ax: 0,
-        ay: -40,
-        bgcolor: 'rgba(0, 0, 0, 0.5)', // Black background color with 50% opacity
-        font: { color: 'white', size: 12 } // White text color
-      };
+    eventTimes.forEach((event) => {
+      event.events.forEach((evt) => {
+        let eventTypeText;
+        let arrowcolor;
 
-      layout.annotations.push(annotation);
-    }
+        switch (event.eventType) {
+          case 'starts':
+            arrowcolor = 'green';
+            eventTypeText = 'Start';
+            break;
+          case 'shutdowns':
+            arrowcolor = 'red';
+            eventTypeText = 'Shutdown';
+            break;
+          case 'ntj':
+            arrowcolor = 'black';
+            eventTypeText = 'Negative time jump';
+            break;
+        }
+
+        /*
+            layout.shapes.push({
+                type: 'line',
+                x0: evt.time,
+                x1: evt.time,
+                yref: 'paper',
+                y0: 0,
+                y1: 1,
+                line: {
+                    color: shapeColor,
+                    width: 2,
+                    dash: 'dot'
+                }
+            });
+*/			
+        layout.annotations.push({
+          x: evt.time,
+          y: 0, // Anchor the annotation to the x-axis (y = 0)
+          yref: 'paper', 
+          ayref: 'paper',
+          ax: 0, 
+          ay: 1, // Set the arrow length to 1, spanning the entire y-axis
+          arrowside: 'start',
+          arrowcolor,
+          hovertext: evt.message,
+          showarrow: true,
+          bgcolor: 'rgba(0, 0, 0, 0)'
+        });
+      });
+    });
 
     Plotly.newPlot(plotDiv, traces, layout, { responsive: true });
   }
 }
 
-
 function plotSystem(data) {
-  const basetime = data[0]['#sampletime'];
+  const basetime = data.parsedData[0]['#sampletime'];
   let lasttime = basetime;
-  let lastCPUTime = parseFloat(data[0]['cputime']);
+  let lastCPUTime = parseFloat(data.parsedData[0]['cputime']);
 
   const times = [];
   const sysLoads = [];
   const cpuTimes = [];
   const memAvails = [];
 
-  for (const d of data) {
-    // console.log('plotSystem - d of data:', d, typeof d);
+  for (const d of data.parsedData) {
+    // console.log('plotSystem - d of data.parsedData:', d, typeof d);
     const st = d['#sampletime'];
     const timedelta = st - lasttime;
 
@@ -352,7 +416,7 @@ function plotSystem(data) {
       name: 'Process Time',
       type: 'scatter',
       mode: 'lines',
-      line: { color: 'red' }
+      line: { color: 'orange' }
     },
     {
       x: times,
@@ -372,9 +436,55 @@ function plotSystem(data) {
     yaxis2: { title: 'Available memory (KB)', overlaying: 'y', side: 'right', position: 0.97, showgrid: false },
     font: { size: 12 },
     legend: { orientation: 'h' },
-    grid: { rows: 1, columns: 1, pattern: 'independent' }
+    grid: { rows: 1, columns: 1, pattern: 'independent' },
+    annotations: [], // Initialize shapes array
+    shapes: [] // Initialize shapes array
   };
 
+  const eventTimes = Object.keys(data.events).map((eventType) => ({
+    eventType,
+    events: data.events[eventType].map((event) => ({
+      time: new Date(parseFloat(event.sampleTime) * 1000),
+      message: event.message
+    }))
+  }));
+  
+  eventTimes.forEach((event) => {
+    event.events.forEach((evt) => {
+      let eventTypeText;
+      let arrowcolor;
+
+      switch (event.eventType) {
+        case 'starts':
+          arrowcolor = 'green';
+          eventTypeText = 'Start';
+          break;
+        case 'shutdowns':
+          arrowcolor = 'red';
+          eventTypeText = 'Shutdown';
+          break;
+        case 'ntj':
+          arrowcolor = 'black';
+          eventTypeText = 'Negative time jump';
+          break;
+      }
+    
+      layout.annotations.push({
+        x: evt.time,
+        y: 0, // Anchor the annotation to the x-axis (y = 0)
+        yref: 'paper', 
+        ayref: 'paper',
+        ax: 0, 
+        ay: 1, // Set the arrow length to 1, spanning the entire y-axis
+        arrowside: 'start',
+        arrowcolor,
+        hovertext: evt.message,
+        showarrow: true,
+        bgcolor: 'rgba(0, 0, 0, 0)'
+      });
+    });
+  });
+  
   Plotly.newPlot('plotDiv2', traces, layout, { responsive: true });
 }
 
@@ -382,7 +492,7 @@ function plotMCUFrequencies(data) {
   // Collect and Filter Keys
   const graphKeys = {};
 
-  for (const d of data) {
+  for (const d of data.parsedData) {
     const mcuPrefixes = Object.keys(d.MCUs);
 
     for (const mcuPrefix of mcuPrefixes) {
@@ -444,19 +554,63 @@ function plotMCUFrequencies(data) {
     yaxis: { title: 'Microsecond Deviation' },
     font: { size: 12 },
     legend: { orientation: 'h' },
-    grid: { rows: 1, columns: 1, pattern: 'independent' }
+    grid: { rows: 1, columns: 1, pattern: 'independent' },
+    annotations: [], // Initialize shapes array
+    shapes: [] // Initialize shapes array
   };
 
+  const eventTimes = Object.keys(data.events).map((eventType) => ({
+    eventType,
+    events: data.events[eventType].map((event) => ({
+      time: new Date(parseFloat(event.sampleTime) * 1000),
+      message: event.message
+    }))
+  }));
+
+  eventTimes.forEach((event) => {
+    event.events.forEach((evt) => {
+      let eventTypeText;
+      let arrowcolor;
+
+      switch (event.eventType) {
+        case 'starts':
+          arrowcolor = 'green';
+          eventTypeText = 'Start';
+          break;
+        case 'shutdowns':
+          arrowcolor = 'red';
+          eventTypeText = 'Shutdown';
+          break;
+        case 'ntj':
+          arrowcolor = 'black';
+          eventTypeText = 'Negative time jump';
+          break;
+      }
+    
+      layout.annotations.push({
+        x: evt.time,
+        y: 0, // Anchor the annotation to the x-axis (y = 0)
+        yref: 'paper', 
+        ayref: 'paper',
+        ax: 0, 
+        ay: 1, // Set the arrow length to 1, spanning the entire y-axis
+        arrowside: 'start',
+        arrowcolor,
+        hovertext: evt.message,
+        showarrow: true,
+        bgcolor: 'rgba(0, 0, 0, 0)'
+      });
+    });
+  });
+  
   Plotly.newPlot('plotDiv3', plotData, layout);
 }
 
 function plotTemperature(data) {
   const heaterData = {};
-  const previousSampleTimes = {};
   const negativeTimeDeltas = {};
-  const timeJumpOffsets = {}; // Store time jump offsets per heater
 
-  for (const d of data) {
+  for (const d of data.parsedData) {
     const heaters = Object.keys(d.Heaters);
 
     for (const heater of heaters) {
@@ -468,40 +622,10 @@ function plotTemperature(data) {
           targets: [],
           pwms: []
         };
-        
-        // Initialize previous sample time for this heater if it's the first time we encounter it
-        if (!previousSampleTimes[heater]) { 
-          previousSampleTimes[heater] = d['#sampletime'];
-        }
       }
-
 
       const heaterValues = d.Heaters[heater];
-      let currentSampleTime = d['#sampletime'];
-      const previousSampleTime = previousSampleTimes[heater]; 
-
-      // Time consistency check and time jump offset calculation (per heater)
-      let timeDelta = 0; 
-
-      if (previousSampleTime) { // Only calculate after the first data point for the heater
-        timeDelta = currentSampleTime - previousSampleTime;
-        if (timeDelta < 0) { // First negative delta
-          timeJumpOffsets[heater] = previousSampleTime; // Store time jump offset for the heater
-          negativeTimeDeltas[heater] = { // Store the marker for the jump
-            times: [new Date((currentSampleTime + timeJumpOffsets[heater]) * 1000)],
-            temps: [parseFloat(heaterValues.temp)]
-          };
-        }
-      }
-    
-      // Update previous sample times
-      previousSampleTimes[heater] = currentSampleTime;
-    
-      // Adjust current sample time and record negative time delta
-      if (timeJumpOffsets[heater]) {
-        currentSampleTime += timeJumpOffsets[heater];
-      }
-
+      const currentSampleTime = d['#sampletime'];
 
       // Store the data with the corrected timestamp
       heaterData[heater].times.push(new Date(currentSampleTime * 1000));
@@ -516,6 +640,15 @@ function plotTemperature(data) {
   const plotDiv4 = document.getElementById('plotDiv4');
 
   plotDiv4.innerHTML = '';
+  
+  const eventTimes = Object.keys(data.events).map((eventType) => ({
+    eventType,
+    events: data.events[eventType].map((event) => ({
+      time: new Date(parseFloat(event.sampleTime) * 1000),
+      message: event.message
+    }))
+  }));
+  
   for (const heaterInfo of Object.values(heaterData)) {
     const heaterDiv = document.createElement('div');
 
@@ -529,7 +662,7 @@ function plotTemperature(data) {
         name: `${heaterInfo.heater} Temp`,
         type: 'scatter',
         mode: 'lines',
-        line: { color: 'red' }
+        line: { color: 'orange' }
       }
     ];
 
@@ -556,17 +689,6 @@ function plotTemperature(data) {
       });
     }
 
-    if (negativeTimeDeltas[heaterInfo.heater]) {
-      traces.push({
-        x: negativeTimeDeltas[heaterInfo.heater].times,
-        y: negativeTimeDeltas[heaterInfo.heater].temps,
-        name: `${heaterInfo.heater} Time Jump`,
-        type: 'scatter',
-        mode: 'markers', // Use markers to highlight the time jump points
-        marker: { color: 'black', symbol: 'x' } // Customize the marker appearance
-      });
-    }
-
     // Create layout with secondary y-axis and annotations
     const layout = {
       title: heaterInfo.heater,
@@ -577,24 +699,47 @@ function plotTemperature(data) {
         overlaying: 'y',
         side: 'right'
       },
-      annotations: [] // Initialize annotations array
+      annotations: [], // Initialize shapes array
+      shapes: [] // Initialize shapes array
     };
 
-    const annotation = {
-      x: negativeTimeDeltas[heaterInfo.heater].times[0], // Assuming the first time point
-      y: 0, // Assuming the first bandwidth delta
-      text: 'NTJ', // Annotation text
-      showarrow: true,
-      arrowhead: 2,
-      ax: 0,
-      ay: -40,
-      bgcolor: 'rgba(0, 0, 0, 0.5)', // Black background color with 50% opacity
-      font: { color: 'white', size: 12 } // White text color
-    };
 
-    layout.annotations.push(annotation);
+    eventTimes.forEach((event) => {
+      event.events.forEach((evt) => {
+        let eventTypeText;
+        let arrowcolor;
 
-
+        switch (event.eventType) {
+          case 'starts':
+            arrowcolor = 'green';
+            eventTypeText = 'Start';
+            break;
+          case 'shutdowns':
+            arrowcolor = 'red';
+            eventTypeText = 'Shutdown';
+            break;
+          case 'ntj':
+            arrowcolor = 'black';
+            eventTypeText = 'Negative time jump';
+            break;
+        }
+    
+        layout.annotations.push({
+          x: evt.time,
+          y: 0, // Anchor the annotation to the x-axis (y = 0)
+          yref: 'paper', 
+          ayref: 'paper',
+          ax: 0, 
+          ay: 1, // Set the arrow length to 1, spanning the entire y-axis
+          arrowside: 'start',
+          arrowcolor,
+          hovertext: evt.message,
+          showarrow: true,
+          bgcolor: 'rgba(0, 0, 0, 0)'
+        });
+      });
+    });
+  
     Plotly.newPlot(`plot_${heaterInfo.heater}`, traces, layout);
   }
 }
