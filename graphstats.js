@@ -24,80 +24,144 @@ function parseLog(logData) {
 
   const lines = logData.split('\n');
   const parsedData = [];
-  const events = { starts: [], shutdowns: [], ntj: [] };
+  const events = { starts: [], shutdowns: [], calculatedBaseTimes: [] };
 
-  let pendingEvent = null;
-  let previousSampleTime = null;
-  let timeAdjustment = null;
+  let baseTimeStamp = null;
+  let baseTimeStampOffset = null;
+  let skippedStats = [];
+  let lastSampleTime = null;
+  let rolloverAdjustment = 0;
+  let applyRolloverAdjustment = false;
 
-  for (const line of lines) {
-    if (line.startsWith('Stats')) {
-      const parts = line.split(' ');
-      const keyparts = { MCUs: {}, Heaters: {} };
-      let currentPrefix = '';
+  // Parse the Stats line and extract the data
+  function parseStatsLine(line) {
+    const parts = line.split(' ');
+    const statsTimestamp = parseFloat(parts[1].slice(0, -1));
+    const keyparts = { MCUs: {}, Heaters: {} };
+    let currentPrefix = '';
 
-      for (let i = 2; i < parts.length; i++) {
-        if (!parts[i].includes('=')) {
-          currentPrefix = parts[i].slice(0, -1);
-          continue;
-        }
-
-        const [name, value] = parts[i].split('=');
-
-        if ((name in applyPrefixMCU) && currentPrefix) {
-          if (!keyparts.MCUs[currentPrefix]) {
-            keyparts.MCUs[currentPrefix] = {};
-          }
-          keyparts.MCUs[currentPrefix][name] = value;
-        } else if ((name in applyPrefixHeaters) && currentPrefix) {
-          if (!keyparts.Heaters[currentPrefix]) {
-            keyparts.Heaters[currentPrefix] = {};
-          }
-          keyparts.Heaters[currentPrefix][name] = value;
-        } else {
-          keyparts[name] = value;
-        }
-      }
-
-      if (!keyparts.print_time) {
+    for (let i = 2; i < parts.length; i++) {
+      if (!parts[i].includes('=')) {
+        currentPrefix = parts[i].slice(0, -1);
         continue;
       }
 
-      let sampleTime = parseFloat(parts[1].slice(0, -1));
+      const [name, value] = parts[i].split('=');
 
-      if (previousSampleTime !== null && sampleTime < previousSampleTime) {
-        events.ntj.push({ sampleTime: previousSampleTime, message: 'Negative time jump at: ' + previousSampleTime });
-        timeAdjustment = previousSampleTime;
+      if ((name in applyPrefixMCU) && currentPrefix) {
+        if (!keyparts.MCUs[currentPrefix]) {
+          keyparts.MCUs[currentPrefix] = {};
+        }
+        keyparts.MCUs[currentPrefix][name] = value;
+      } else if ((name in applyPrefixHeaters) && currentPrefix) {
+        if (!keyparts.Heaters[currentPrefix]) {
+          keyparts.Heaters[currentPrefix] = {};
+        }
+        keyparts.Heaters[currentPrefix][name] = value;
+      } else {
+        keyparts[name] = value;
+      }
+    }
+
+    if (!keyparts.print_time) {
+      return null;
+    }
+
+    return { lineData: keyparts, statsTimestamp };
+  }
+
+  // Apply the logic for the timestamps to the parsed lines
+  function processStatsLine(parsedLine) {
+    const { lineData, statsTimestamp } = parsedLine;
+    const adjustment = applyRolloverAdjustment ? rolloverAdjustment : 0;
+    const sampleTime = baseTimeStamp - baseTimeStampOffset + adjustment + statsTimestamp;
+
+    lastSampleTime = sampleTime;
+
+    lineData['#sampletime'] = sampleTime;
+    lineData['#original_sampletime'] = statsTimestamp;
+    lineData['#basetime'] = baseTimeStamp;
+
+    parsedData.push(lineData);
+  }
+
+  // If log does not start with an useable time source
+  // skip the steps and reprocess once time is available
+  function processSkippedStats() {
+    if (skippedStats.length > 0) {
+      const maxStatsTimestamp = Math.max(...skippedStats.map((s) => s.statsTimestamp));
+      const calculatedBaseTime = baseTimeStamp - baseTimeStampOffset - maxStatsTimestamp;
+
+      // events.calculatedBaseTimes.push({ sampleTime: calculatedBaseTime, message: 'Calculated base time' });
+
+      skippedStats.forEach((stat) => {
+        const sampleTime = calculatedBaseTime + stat.statsTimestamp;
+
+        stat.lineData['#sampletime'] = sampleTime;
+        stat.lineData['#original_sampletime'] = stat.statsTimestamp;
+        stat.lineData['#basetime'] = calculatedBaseTime;
+
+        parsedData.push(stat.lineData);
+      });
+      skippedStats = [];
+    }
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('Stats')) {
+      const parsedLine = parseStatsLine(line);
+
+      if (!parsedLine) {
+        continue;
       }
 
-      // Update previous sample time before adjusting the current sample time
-      previousSampleTime = sampleTime;
-
-      // Adjust sample time if there's a negative time jump
-      if (timeAdjustment) {
-        sampleTime += timeAdjustment;
+      // No time source yet available
+      if (baseTimeStamp === null) {
+        skippedStats.push(parsedLine);
+      } else {
+        // On a log roll-over all follwoing stats lines will start at the 
+        // roll over date. Adjustment is taken from the first "Stats" line
+        // after the roll-over
+        if (applyRolloverAdjustment && rolloverAdjustment === 0) {
+          rolloverAdjustment = -parsedLine.statsTimestamp;
+        }
+        processStatsLine(parsedLine);
       }
+    // The most accurate source for a timestamp is the "Printer start at" event
+    } else if (line.startsWith('Start printer at')) {
+      const match = line.match(/at\s+(.*) \((\d+\.\d+)\s+(\d+\.\d+)\)/);
 
-      keyparts['#sampletime'] = sampleTime;
-
-      if (pendingEvent) {
-        events[pendingEvent.type].push({ sampleTime, message: pendingEvent.line + ' (before: ' + sampleTime + ')' });
-        pendingEvent = null;
+      if (match) {
+        baseTimeStamp = parseFloat(match[2]);
+        baseTimeStampOffset = parseFloat(match[3]);
+        rolloverAdjustment = 0; // Reset rollover adjustment
+        applyRolloverAdjustment = false; // Disable applying rollover adjustment
+        processSkippedStats();
       }
+      events.starts.push({ sampleTime: baseTimeStamp, message: line });
+    // Log roll-over only contains a time & date but no monotonic offset
+    // Often and unfortunately the only usable time source at the beginning
+    // of the log.
+    } else if (line.startsWith('=============== Log rollover at')) {
+      const match = line.match(/at\s+(.*) =+/);
 
-      parsedData.push(keyparts);
-    } else if (line.startsWith('Start printer at') || line.startsWith('=============== Log rollover at')) {
-      pendingEvent = { type: 'starts', line };
-    } else if (line.startsWith('===== Config file =====')) {
-      if (!pendingEvent || pendingEvent.type !== 'starts') {
-        pendingEvent = { type: 'starts', line };
+      if (match) {
+        baseTimeStamp = new Date(match[1]).getTime() / 1000;
+        baseTimeStampOffset = 0; // No offset in log rollover case
+        rolloverAdjustment = 0; // Reset rollover adjustment for now
+        applyRolloverAdjustment = true; // Enable applying rollover adjustment
+        processSkippedStats();
       }
+      events.starts.push({ sampleTime: baseTimeStamp, message: line });
     } else if (line.startsWith('Transition to shutdown state:')) {
-      if (previousSampleTime !== null) {
-        events.shutdowns.push({ sampleTime: previousSampleTime + timeAdjustment, message: line + ' (after: ' + previousSampleTime + ')' });
+      if (baseTimeStamp !== null && lastSampleTime !== null) {
+        events.shutdowns.push({ sampleTime: lastSampleTime, message: line });
       }
     }
   }
+
+  // If there are any skipped stats left unprocessed at the end, process them now
+  processSkippedStats();
 
   return { parsedData, events };
 }
@@ -154,18 +218,13 @@ function findPrintRestarts(data) {
 }
 
 function plotMCU(data, maxBandwidth) {
+  console.log(data);
   const plotData = {};
   const previousSampleTimes = {};
-  const negativeTimeDeltas = {};
-  const timeJumpOffsets = {}; // Store time jump offsets per MCU
-  // console.log(data);
-  // console.log(data.parsedData);
   const basetime = data.parsedData[0]['#sampletime'];
   const sampleResets = findPrintRestarts(data.parsedData);
 
   for (const d of data.parsedData) {
-    // console.log(d)
-    // console.log(Object.keys(d.MCUs))
     const mcuPrefixes = Object.keys(d.MCUs);
 
     for (const mcuPrefix of mcuPrefixes) {
@@ -181,34 +240,22 @@ function plotMCU(data, maxBandwidth) {
       }
 
       // Calculation logic
-      let currentSampleTime = d['#sampletime'];
+      const currentSampleTime = d['#sampletime'];
     
       // Initialize previous sample time for this MCU
       if (!previousSampleTimes[mcuPrefix]) { 
         previousSampleTimes[mcuPrefix] = d['#sampletime'];
       }
 
-      // Time consistency check and time jump offset calculation (per MCU)
+      // Time consistency check (per MCU)
       let timeDelta = 0;
     
       if (previousSampleTimes[mcuPrefix]) {
         timeDelta = currentSampleTime - previousSampleTimes[mcuPrefix];
-        if (timeDelta < 0) { // First negative delta
-          timeJumpOffsets[mcuPrefix] = previousSampleTimes[mcuPrefix]; // Store time jump offset for the MCU
-          negativeTimeDeltas[mcuPrefix] = {
-            times: [new Date((currentSampleTime + timeJumpOffsets[mcuPrefix]) * 1000)],
-            bwDeltas: [0] // Use any available value
-          };
-        }
       }
 
       // Update previous sample time before time jump adjustment
-      previousSampleTimes[mcuPrefix] = currentSampleTime; // Ensure correct delta for next iteration
-
-      // Adjust current sample time and record negative time delta
-      if (timeJumpOffsets[mcuPrefix]) {
-        currentSampleTime += timeJumpOffsets[mcuPrefix];
-      }
+      previousSampleTimes[mcuPrefix] = currentSampleTime;
 
       const bw = parseFloat(d['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(d['MCUs'][mcuPrefix]['bytes_retransmit']);
 
@@ -301,10 +348,10 @@ function plotMCU(data, maxBandwidth) {
 
     const layout = {
       title: `MCU Bandwidth and Load Utilization - ${mcuPrefix}`,
-      xaxis: { tickformat: '%H:%M', title: 'Time' },
+      xaxis: { title: 'Time' },
       yaxis: { title: 'Usage (%)' },
       font: { size: 12 },
-      legend: { orientation: 'h' },
+      legend: { orientation: 'h', y: -0.15 },
       grid: { columns: 1, pattern: 'independent', rows: 1 },
       annotations: [], // Initialize shapes array
       shapes: [] // Initialize shapes array
@@ -324,27 +371,8 @@ function plotMCU(data, maxBandwidth) {
             arrowcolor = 'red';
             eventTypeText = 'Shutdown';
             break;
-          case 'ntj':
-            arrowcolor = 'black';
-            eventTypeText = 'Negative time jump';
-            break;
         }
 
-        /*
-            layout.shapes.push({
-                type: 'line',
-                x0: evt.time,
-                x1: evt.time,
-                yref: 'paper',
-                y0: 0,
-                y1: 1,
-                line: {
-                    color: shapeColor,
-                    width: 2,
-                    dash: 'dot'
-                }
-            });
-*/			
         layout.annotations.push({
           x: evt.time,
           y: 0, // Anchor the annotation to the x-axis (y = 0)
@@ -391,6 +419,7 @@ function plotSystem(data) {
     lastCPUTime = cpuTime;
 
     times.push(new Date(st * 1000));
+    // times.push(st);
     // console.log('plotSystem - times:', times, typeof times);
     sysLoads.push(parseFloat(d['sysload']) * 100);
     // console.log('plotSystem - sysLoads:', sysLoads, typeof sysLoads);
@@ -431,11 +460,11 @@ function plotSystem(data) {
 
   const layout = {
     title: 'System load utilization',
-    xaxis: { title: 'Time', tickformat: '%H:%M' },
+    xaxis: { title: 'Time' },
     yaxis: { title: 'Load (% of a core)' },
     yaxis2: { title: 'Available memory (KB)', overlaying: 'y', side: 'right', position: 0.97, showgrid: false },
     font: { size: 12 },
-    legend: { orientation: 'h' },
+    legend: { orientation: 'h', y: -0.15 },
     grid: { rows: 1, columns: 1, pattern: 'independent' },
     annotations: [], // Initialize shapes array
     shapes: [] // Initialize shapes array
@@ -462,10 +491,6 @@ function plotSystem(data) {
         case 'shutdowns':
           arrowcolor = 'red';
           eventTypeText = 'Shutdown';
-          break;
-        case 'ntj':
-          arrowcolor = 'black';
-          eventTypeText = 'Negative time jump';
           break;
       }
     
@@ -537,7 +562,6 @@ function plotMCUFrequencies(data) {
       const label = `${key} (${mhz}MHz)`;
       const hz = mhz * 1000000;
 
-      
       return {
         x: times,
         y: values.map((v) => (v - hz) / mhz),
@@ -550,10 +574,10 @@ function plotMCUFrequencies(data) {
   // Plotly Setup
   const layout = {
     title: 'MCU Frequencies',
-    xaxis: { title: 'Time', tickformat: '%H:%M' },
+    xaxis: { title: 'Time' },
     yaxis: { title: 'Microsecond Deviation' },
     font: { size: 12 },
-    legend: { orientation: 'h' },
+    legend: { orientation: 'h', y: -0.15 },
     grid: { rows: 1, columns: 1, pattern: 'independent' },
     annotations: [], // Initialize shapes array
     shapes: [] // Initialize shapes array
@@ -576,8 +600,7 @@ function plotMCUFrequencies(data) {
         case 'starts':
           arrowcolor = 'green';
           eventTypeText = 'Start';
-          break;
-        case 'shutdowns':
+          break; case 'shutdowns':
           arrowcolor = 'red';
           eventTypeText = 'Shutdown';
           break;
@@ -608,7 +631,6 @@ function plotMCUFrequencies(data) {
 
 function plotTemperature(data) {
   const heaterData = {};
-  const negativeTimeDeltas = {};
 
   for (const d of data.parsedData) {
     const heaters = Object.keys(d.Heaters);
@@ -648,7 +670,7 @@ function plotTemperature(data) {
       message: event.message
     }))
   }));
-  
+
   for (const heaterInfo of Object.values(heaterData)) {
     const heaterDiv = document.createElement('div');
 
@@ -663,7 +685,7 @@ function plotTemperature(data) {
         type: 'scatter',
         mode: 'lines',
         line: { color: 'orange' }
-      }
+      }  
     ];
 
     if (heaterInfo.targets.some(Boolean)) {
@@ -691,14 +713,17 @@ function plotTemperature(data) {
 
     // Create layout with secondary y-axis and annotations
     const layout = {
-      title: heaterInfo.heater,
-      showlegend: true,
+      title: `Temperatures - ${heaterInfo.heater}`,
+      xaxis: { title: 'Time' },
       yaxis: { title: 'Temperature' },
       yaxis2: {
         title: 'PWM',
         overlaying: 'y',
         side: 'right'
       },
+      font: { size: 12 },
+      legend: { orientation: 'h', y: -0.15 },
+      grid: { columns: 1, pattern: 'independent', rows: 1 },
       annotations: [], // Initialize shapes array
       shapes: [] // Initialize shapes array
     };
@@ -718,10 +743,6 @@ function plotTemperature(data) {
             arrowcolor = 'red';
             eventTypeText = 'Shutdown';
             break;
-          case 'ntj':
-            arrowcolor = 'black';
-            eventTypeText = 'Negative time jump';
-            break;
         }
     
         layout.annotations.push({
@@ -729,7 +750,7 @@ function plotTemperature(data) {
           y: 0, // Anchor the annotation to the x-axis (y = 0)
           yref: 'paper', 
           ayref: 'paper',
-          ax: 0, 
+          ax: 1, 
           ay: 1, // Set the arrow length to 1, spanning the entire y-axis
           arrowside: 'start',
           arrowcolor,
@@ -744,6 +765,118 @@ function plotTemperature(data) {
   }
 }
 
+function plotAdvancedData(data) {
+  // console.log(data);
+  const plotData = {};
+
+  for (const d of data.parsedData) {
+    const mcuPrefixes = Object.keys(d.MCUs);
+
+    for (const mcuPrefix of mcuPrefixes) {
+      if (!plotData[mcuPrefix]) {
+        plotData[mcuPrefix] = {
+          times: [],
+          srtt: [],
+          rttvar: [],
+          rto: [],
+          ready_bytes: [],
+          upcoming_bytes: []
+        };
+      }
+
+      const currentSampleTime = d['#sampletime'];
+
+      plotData[mcuPrefix].times.push(new Date(currentSampleTime * 1000));
+      plotData[mcuPrefix].srtt.push(parseFloat(d.MCUs[mcuPrefix].srtt));
+      plotData[mcuPrefix].rttvar.push(parseFloat(d.MCUs[mcuPrefix].rttvar));
+      plotData[mcuPrefix].rto.push(parseFloat(d.MCUs[mcuPrefix].rto));
+      plotData[mcuPrefix].ready_bytes.push(parseFloat(d.MCUs[mcuPrefix].ready_bytes));
+      plotData[mcuPrefix].upcoming_bytes.push(parseFloat(d.MCUs[mcuPrefix].upcoming_bytes));
+    }
+  }
+
+  // Parent container for all advanced graphs
+  const plotDiv5 = document.getElementById('plotDiv5');
+
+  plotDiv5.innerHTML = ''; // Clear any existing content
+
+  // Convert event keys to Date objects
+  const eventTimes = Object.keys(data.events).map((eventType) => ({
+    eventType,
+    events: data.events[eventType].map((event) => ({
+      time: new Date(parseFloat(event.sampleTime) * 1000),
+      message: event.message
+    }))
+  }));
+
+  const metrics = ['srtt', 'rttvar', 'rto', 'ready_bytes', 'upcoming_bytes'];
+
+  // Create graphs for all advanced metrics
+  for (const mcuPrefix in plotData) {
+    metrics.forEach((metric) => {
+      const traces = [
+        {
+          x: plotData[mcuPrefix].times,
+          y: plotData[mcuPrefix][metric],
+          name: `${metric} - ${mcuPrefix}`,
+          type: 'scatter',
+          mode: 'lines',
+          line: { color: 'blue' }
+        }
+      ];
+
+      const plotDiv = document.createElement('div');
+
+      plotDiv.id = `plotDiv_${mcuPrefix}_${metric}`;
+      plotDiv5.appendChild(plotDiv);
+
+      const layout = {
+        title: `MCU ${metric} - ${mcuPrefix}`,
+        xaxis: { title: 'Time' },
+        yaxis: { title: `${metric}` },
+        font: { size: 12 },
+        legend: { orientation: 'h', y: -0.15 },
+        grid: { columns: 1, pattern: 'independent', rows: 1 },
+        annotations: [],
+        shapes: []
+      };
+
+      eventTimes.forEach((event) => {
+        event.events.forEach((evt) => {
+          let eventTypeText;
+          let arrowcolor;
+
+          switch (event.eventType) {
+            case 'starts':
+              arrowcolor = 'green';
+              eventTypeText = 'Start';
+              break;
+            case 'shutdowns':
+              arrowcolor = 'red';
+              eventTypeText = 'Shutdown';
+              break;
+          }
+
+          layout.annotations.push({
+            x: evt.time,
+            y: 0,
+            yref: 'paper',
+            ayref: 'paper',
+            ax: 0,
+            ay: 1,
+            arrowside: 'start',
+            arrowcolor,
+            hovertext: evt.message,
+            showarrow: true,
+            bgcolor: 'rgba(0, 0, 0, 0)'
+          });
+        });
+      });
+
+      Plotly.newPlot(plotDiv, traces, layout, { responsive: true });
+    });
+  }
+}
 
 $(document).ready(() => {
   document.getElementById('buttonProcess').addEventListener('click', () => {
@@ -761,6 +894,7 @@ $(document).ready(() => {
         plotSystem(parsedData);
         plotMCUFrequencies(parsedData);
         plotTemperature(parsedData);
+        plotAdvancedData(parsedData);
       };
 
       reader.readAsText(file);
