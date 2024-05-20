@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Graph Klipper Stats</title>
+    <script language="JavaScript" type="text/javascript" src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="./graphstats.js"></script>
+    <style>
+        #header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background-color: #fff;
+            z-index: 1000;
+            display: flex; /* Enable Flexbox for header */
+            align-items: center; /* Vertically align items */
+            gap: 20px; /* Consistent gap between button and select */
+            padding: 10px; /* Add some padding */
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        #graphs {
+            margin-top: 60px; /* Height of the header */
+        }
+
+        #backButton,
+        #sessionSelect {
+            display: inline-block; /* Buttons next to each other */
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <button id="backButton">Back</button>
+        <select id="sessionSelect"></select>
+    </div>
+    <div id="graphs">
+        <div id="plotDiv1"></div>
+        <div id="plotDiv2"></div>
+        <div id="plotDiv3"></div>
+        <div id="plotDiv4"></div>
+        <div id="plotDiv5"></div>
+    </div>
+    <script>
+      document.getElementById('backButton').addEventListener('click', () => {
+        window.location.href = 'index2.html';
+      });
+
+      const logData = sessionStorage.getItem('logData');
+
+      if (logData) {
+        const parsedData = parseLog(logData);
+        const sessionSelect = document.getElementById('sessionSelect');
+        const sessions = Object.keys(parsedData);
+
+        // Session Option Generation
+        sessionSelect.innerHTML = '<option value="all">All Sessions</option>';
+        sessions.forEach((key, index) => {
+          const timeStamp = new Date(Number(key) * 1000).toLocaleString(); // Convert key to number
+
+          sessionSelect.innerHTML += `<option value="${key}">Session ${index + 1}: ${timeStamp} (${parsedData[key].datapoints.length} data points)</option>`;
+        });
+
+        sessionSelect.addEventListener('change', () => {
+          const selectedSession = sessionSelect.value;
+
+          // Clear previous plots
+          [...document.querySelectorAll('#graphs > div')].forEach((div) => div.innerHTML = '');
+
+          // Plotting functions
+          if (selectedSession === 'all') {
+            plotMCU(parsedData, MAXBANDWIDTH, selectedSession);
+            plotSystem(parsedData, selectedSession);
+            plotMCUFrequencies(parsedData, selectedSession);
+            plotTemperature(parsedData, selectedSession);
+            plotAdvancedData(parsedData, selectedSession);
+          } else if (parsedData[selectedSession]) {
+            const sessionDataPoints = parsedData[selectedSession].datapoints;
+
+            if (sessionDataPoints.length === 0) {
+              alert('Session with 0 data-points selected. Switching to All Sessions.');
+              sessionSelect.value = 'all'; // Select "All Sessions"
+              plotMCU(parsedData, MAXBANDWIDTH, 'all'); // Re-plot for all sessions
+              plotSystem(parsedData, 'all');
+              plotMCUFrequencies(parsedData, 'all');
+              plotTemperature(parsedData, 'all');
+              plotAdvancedData(parsedData, 'all');
+
+              return; // Break the operation
+            }
+
+            const sessionData = {
+              [selectedSession]: parsedData[selectedSession]
+            };
+
+            plotMCU(sessionData, MAXBANDWIDTH, selectedSession);
+            plotSystem(sessionData, selectedSession);
+            plotMCUFrequencies(sessionData, selectedSession);
+            plotTemperature(sessionData, selectedSession);
+            plotAdvancedData(sessionData, selectedSession);
+          } else {
+            alert(`Error: Session ${selectedSession} not found.`);
+          }
+        });
+
+        // Initial plot call
+        const initialSession = sessionSelect.value || 'all';
+
+        plotMCU(parsedData, MAXBANDWIDTH, initialSession);
+        plotSystem(parsedData, initialSession);
+        plotMCUFrequencies(parsedData, initialSession);
+        plotTemperature(parsedData, initialSession);
+        plotAdvancedData(parsedData, initialSession);
+      } else {
+        alert('No log data found. Please go back and upload a log file.');
+      }
+
+    </script>
+</body>
+</html>

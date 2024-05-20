@@ -1,46 +1,67 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <meta charset="UTF-8">
-    <script language="JavaScript" type="text/javascript" src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <script language="JavaScript" type="text/javascript" src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <title>Graph Klipper Stats</title>
     <script language="JavaScript" type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
-    <script language="JavaScript" type="text/javascript" src="./graphstats.js"></script>
     <style>
-      #containerHeater {
-        display: flex;
-        align-items: center;
+      #fileInput { /* Add style for the file input */
+      margin-bottom: 10px; /* Add a bottom margin to create space */
       }
-
-      #fieldSelectHeater {
-        margin-right: 20px;
+      .button-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
       }
-
-      #containerCustomHeater {
-        display: none;
+      #buttonProcess {
+      width: auto; /* or use max-width: fit-content; */
+      align-self: flex-start; /* Align button to the start of the container */
       }
     </style>
-    <title>Graph Klipper Stats</title>
   </head>
   <body>
     <h1>Graph Klipper Stats</h1>
     <div>
-      <p>This webpage uses the logic of Klipper's <a href="https://github.com/Klipper3d/klipper/blob/master/scripts/graphstats.py" target="_blank">graphstats.py</a> to analyse a <code>klippy.log</code> and display the results in graphs. This is a direct transformation of the Python script and thus based on the original work of Kevin O'Connor. </p>
-      <p>For the sources and license information see <a href="https://github.com/Sineos/sineos.github.io" target="_blank">the GH repository</a>
+      <p>
+        This webpage uses the logic of Klipper's
+        <a href="https://github.com/Klipper3d/klipper/blob/master/scripts/graphstats.py" target="_blank">graphstats.py</a>
+        to analyze a <code>klippy.log</code> and display the results in graphs. This is a direct transformation of the Python
+        script and thus based on the original work of Kevin O'Connor.
       </p>
-      <p>Just browse for the <code>klippy.log</code> using below button. Heater(s) for the temperature graph can be chosen with the drop-down </p>
+      <p>
+        For the sources and license information see
+        <a href="https://github.com/Sineos/sineos.github.io" target="_blank">the GH repository</a>.
+      </p>
+      <p>
+        Just browse for the <code>klippy.log</code> using the button below and press "Process Log".
+      </p>
     </div>
     <div>
       <input type="file" id="fileInput">
     </div>
-    <div>
-      <input name="buttonProcess" type="button" id="buttonProcess" value="Process Log" />
+    <div class="button-container">
+      <input name="buttonProcess" type="button" id="buttonProcess" value="Process Log">
     </div>
-    <div id="plotDiv1"></div>
-    <div id="plotDiv2"></div>
-    <div id="plotDiv3"></div>
-    <div id="plotDiv4"></div>
-    <div id="plotDiv5"></div>
-    <script></script>
+    <script>
+      document.getElementById('buttonProcess').addEventListener('click', () => {
+        const fileInput = document.getElementById('fileInput');
+
+        if (fileInput.files.length > 0) {
+          const file = fileInput.files[0];
+          const reader = new FileReader();
+
+          reader.onload = function(event) {
+            const logData = event.target.result;
+
+            sessionStorage.setItem('logData', logData);
+            window.location.href = 'graphs.html';
+          };
+
+          reader.readAsText(file);
+        } else {
+          alert('Please select a log file');
+        }
+      });
+    </script>
   </body>
 </html>

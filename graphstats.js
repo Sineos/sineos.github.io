@@ -8,6 +8,10 @@ const MAXBUFFER = 2;
 const STATS_INTERVAL = 5;
 const TASK_MAX = 0.0025;
 
+// -----------------------------------------------------------------------------------------------
+// Parse Log
+// -----------------------------------------------------------------------------------------------
+
 const APPLY_PREFIX_MCU = [
   'mcu_awake', 'mcu_task_avg', 'mcu_task_stddev', 'bytes_write',
   'bytes_read', 'bytes_retransmit', 'freq', 'adj', 'srtt', 'rttvar',
@@ -23,17 +27,15 @@ function parseLog(logData) {
   const applyPrefixHeaters = APPLY_PREFIX_HEATER.reduce((acc, p) => ({ ...acc, [p]: true }), {});
 
   const lines = logData.split('\n');
-  const parsedData = [];
-  const events = { starts: [], shutdowns: [], calculatedBaseTimes: [] };
+  const sessions = {};
+  let currentSession = null;
 
   let baseTimeStamp = null;
-  let baseTimeStampOffset = null;
   let skippedStats = [];
   let lastSampleTime = null;
-  let rolloverAdjustment = 0;
-  let applyRolloverAdjustment = false;
+  let monotonicAdjustment = null;
+  let skippedMonotonicAdjustment = null;
 
-  // Parse the Stats line and extract the data
   function parseStatsLine(line) {
     const parts = line.split(' ');
     const statsTimestamp = parseFloat(parts[1].slice(0, -1));
@@ -70,11 +72,9 @@ function parseLog(logData) {
     return { lineData: keyparts, statsTimestamp };
   }
 
-  // Apply the logic for the timestamps to the parsed lines
   function processStatsLine(parsedLine) {
     const { lineData, statsTimestamp } = parsedLine;
-    const adjustment = applyRolloverAdjustment ? rolloverAdjustment : 0;
-    const sampleTime = baseTimeStamp - baseTimeStampOffset + adjustment + statsTimestamp;
+    const sampleTime = baseTimeStamp - monotonicAdjustment + statsTimestamp;
 
     lastSampleTime = sampleTime;
 
@@ -82,28 +82,43 @@ function parseLog(logData) {
     lineData['#original_sampletime'] = statsTimestamp;
     lineData['#basetime'] = baseTimeStamp;
 
-    parsedData.push(lineData);
+    currentSession.datapoints.push(lineData);
   }
 
-  // If log does not start with an useable time source
-  // skip the steps and reprocess once time is available
   function processSkippedStats() {
     if (skippedStats.length > 0) {
-      const maxStatsTimestamp = Math.max(...skippedStats.map((s) => s.statsTimestamp));
-      const calculatedBaseTime = baseTimeStamp - baseTimeStampOffset - maxStatsTimestamp;
+      const lastSkipped = skippedStats[skippedStats.length - 1].statsTimestamp;
+      const firstSkipped = skippedStats[0].statsTimestamp;
+      let virtualBaseTimeStamp = baseTimeStamp - lastSkipped + firstSkipped;
 
-      // events.calculatedBaseTimes.push({ sampleTime: calculatedBaseTime, message: 'Calculated base time' });
+      // Adjust virtualBaseTimeStamp by subtracting 1 second
+      virtualBaseTimeStamp -= 1;
+
+      const virtualStartMessage = `Virtual Start (${new Date(virtualBaseTimeStamp * 1000).toLocaleString()})`;
+
+      const virtualSession = {
+        baseTimeStamp: virtualBaseTimeStamp,
+        datapoints: [],
+        events: {
+          starts: [{ sampleTime: virtualBaseTimeStamp, message: virtualStartMessage }],
+          shutdowns: []
+        }
+      };
+
+      skippedMonotonicAdjustment = firstSkipped;
 
       skippedStats.forEach((stat) => {
-        const sampleTime = calculatedBaseTime + stat.statsTimestamp;
+        const sampleTime = virtualBaseTimeStamp - skippedMonotonicAdjustment + stat.statsTimestamp;
 
         stat.lineData['#sampletime'] = sampleTime;
         stat.lineData['#original_sampletime'] = stat.statsTimestamp;
-        stat.lineData['#basetime'] = calculatedBaseTime;
+        stat.lineData['#basetime'] = virtualBaseTimeStamp;
 
-        parsedData.push(stat.lineData);
+        virtualSession.datapoints.push(stat.lineData);
       });
+
       skippedStats = [];
+      sessions[virtualBaseTimeStamp] = virtualSession;
     }
   }
 
@@ -115,47 +130,57 @@ function parseLog(logData) {
         continue;
       }
 
-      // No time source yet available
       if (baseTimeStamp === null) {
         skippedStats.push(parsedLine);
       } else {
-        // On a log roll-over all follwoing stats lines will start at the 
-        // roll over date. Adjustment is taken from the first "Stats" line
-        // after the roll-over
-        if (applyRolloverAdjustment && rolloverAdjustment === 0) {
-          rolloverAdjustment = -parsedLine.statsTimestamp;
+        if (monotonicAdjustment === null) {
+          monotonicAdjustment = parsedLine.statsTimestamp;
         }
         processStatsLine(parsedLine);
       }
-    // The most accurate source for a timestamp is the "Printer start at" event
     } else if (line.startsWith('Start printer at')) {
       const match = line.match(/at\s+(.*) \((\d+\.\d+)\s+(\d+\.\d+)\)/);
 
       if (match) {
         baseTimeStamp = parseFloat(match[2]);
-        baseTimeStampOffset = parseFloat(match[3]);
-        rolloverAdjustment = 0; // Reset rollover adjustment
-        applyRolloverAdjustment = false; // Disable applying rollover adjustment
+        monotonicAdjustment = null; // Reset monotonic adjustment
+        skippedMonotonicAdjustment = null; // Reset skipped monotonic adjustment
         processSkippedStats();
+
+        currentSession = {
+          baseTimeStamp,
+          datapoints: [],
+          events: {
+            starts: [{ sampleTime: baseTimeStamp, message: line }],
+            shutdowns: []
+          }
+        };
+
+        sessions[baseTimeStamp] = currentSession;
       }
-      events.starts.push({ sampleTime: baseTimeStamp, message: line });
-    // Log roll-over only contains a time & date but no monotonic offset
-    // Often and unfortunately the only usable time source at the beginning
-    // of the log.
     } else if (line.startsWith('=============== Log rollover at')) {
       const match = line.match(/at\s+(.*) =+/);
 
       if (match) {
         baseTimeStamp = new Date(match[1]).getTime() / 1000;
-        baseTimeStampOffset = 0; // No offset in log rollover case
-        rolloverAdjustment = 0; // Reset rollover adjustment for now
-        applyRolloverAdjustment = true; // Enable applying rollover adjustment
+        monotonicAdjustment = null; // Reset monotonic adjustment
+        skippedMonotonicAdjustment = null; // Reset skipped monotonic adjustment
         processSkippedStats();
+
+        currentSession = {
+          baseTimeStamp,
+          datapoints: [],
+          events: {
+            starts: [{ sampleTime: baseTimeStamp, message: line }],
+            shutdowns: []
+          }
+        };
+
+        sessions[baseTimeStamp] = currentSession;
       }
-      events.starts.push({ sampleTime: baseTimeStamp, message: line });
     } else if (line.startsWith('Transition to shutdown state:')) {
       if (baseTimeStamp !== null && lastSampleTime !== null) {
-        events.shutdowns.push({ sampleTime: lastSampleTime, message: line });
+        currentSession.events.shutdowns.push({ sampleTime: lastSampleTime, message: line });
       }
     }
   }
@@ -163,9 +188,12 @@ function parseLog(logData) {
   // If there are any skipped stats left unprocessed at the end, process them now
   processSkippedStats();
 
-  return { parsedData, events };
+  return sessions;
 }
 
+// -----------------------------------------------------------------------------------------------
+// Find Printer Restarts
+// -----------------------------------------------------------------------------------------------
 
 function findPrintRestarts(data) {
   const runoffSamples = {};
@@ -213,96 +241,115 @@ function findPrintRestarts(data) {
       .flatMap(([startTime, [stall, samples]]) => samples.filter((time) => !stall).map((time) => [time, 1]))
   );
   // console.log(sampleResets);
-  
+
   return sampleResets;
 }
 
-function plotMCU(data, maxBandwidth) {
-  console.log(data);
+// -----------------------------------------------------------------------------------------------
+// Plot MCUs
+// -----------------------------------------------------------------------------------------------
+
+function plotMCU(data, maxBandwidth, session = 'all') {
+  // console.log(data);
   const plotData = {};
   const previousSampleTimes = {};
-  const basetime = data.parsedData[0]['#sampletime'];
-  const sampleResets = findPrintRestarts(data.parsedData);
+  const sampleResets = findPrintRestarts(data);
 
-  for (const d of data.parsedData) {
-    const mcuPrefixes = Object.keys(d.MCUs);
+  // Determine which sessions to process
+  const sessionsToProcess = session === 'all' ? Object.keys(data) : [session];
 
-    for (const mcuPrefix of mcuPrefixes) {
-      if (!plotData[mcuPrefix]) {
-        plotData[mcuPrefix] = {
-          times: [],
-          bwDeltas: [],
-          loads: [],
-          awake: [],
-          hostBuffers: [],
-          lastBW: parseFloat(data.parsedData[0]['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(data.parsedData[0]['MCUs'][mcuPrefix]['bytes_retransmit'])
-        };
-      }
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+    const basetime = sessionData.baseTimeStamp;
 
-      // Calculation logic
-      const currentSampleTime = d['#sampletime'];
-    
-      // Initialize previous sample time for this MCU
-      if (!previousSampleTimes[mcuPrefix]) { 
-        previousSampleTimes[mcuPrefix] = d['#sampletime'];
-      }
+    for (const d of sessionData.datapoints) {
+      const mcuPrefixes = Object.keys(d.MCUs);
 
-      // Time consistency check (per MCU)
-      let timeDelta = 0;
-    
-      if (previousSampleTimes[mcuPrefix]) {
-        timeDelta = currentSampleTime - previousSampleTimes[mcuPrefix];
-      }
+      for (const mcuPrefix of mcuPrefixes) {
+        if (!plotData[mcuPrefix]) {
+          plotData[mcuPrefix] = {
+            times: [],
+            bwDeltas: [],
+            loads: [],
+            awake: [],
+            hostBuffers: [],
+            lastBW: parseFloat(d['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(d['MCUs'][mcuPrefix]['bytes_retransmit'])
+          };
+        }
 
-      // Update previous sample time before time jump adjustment
-      previousSampleTimes[mcuPrefix] = currentSampleTime;
+        // Calculation logic
+        const currentSampleTime = d['#sampletime'];
 
-      const bw = parseFloat(d['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(d['MCUs'][mcuPrefix]['bytes_retransmit']);
+        // Initialize previous sample time for this MCU
+        if (!previousSampleTimes[mcuPrefix]) {
+          previousSampleTimes[mcuPrefix] = d['#sampletime'];
+        }
 
-      if (bw < plotData[mcuPrefix].lastBW) {
+        // Time consistency check (per MCU)
+        let timeDelta = 0;
+
+        if (previousSampleTimes[mcuPrefix]) {
+          timeDelta = currentSampleTime - previousSampleTimes[mcuPrefix];
+        }
+
+        // Update previous sample time before time jump adjustment
+        previousSampleTimes[mcuPrefix] = currentSampleTime;
+
+        const bw = parseFloat(d['MCUs'][mcuPrefix]['bytes_write']) + parseFloat(d['MCUs'][mcuPrefix]['bytes_retransmit']);
+
+        if (bw < plotData[mcuPrefix].lastBW) {
+          plotData[mcuPrefix].lastBW = bw;
+          continue;
+        }
+
+        let load = parseFloat(d['MCUs'][mcuPrefix]['mcu_task_avg']) + (3 * parseFloat(d['MCUs'][mcuPrefix]['mcu_task_stddev']));
+
+        if (currentSampleTime - basetime < 15) {
+          load = 0;
+        }
+
+        const pt = parseFloat(d['print_time']);
+        let hb = parseFloat(d['buffer_time']);
+
+        if (hb >= MAXBUFFER || currentSampleTime in sampleResets) {
+          hb = 0;
+        } else {
+          hb = 100 * (MAXBUFFER - hb) / MAXBUFFER;
+        }
+
+        // Directly update plotData
+        plotData[mcuPrefix].times.push(new Date(currentSampleTime * 1000));
+        plotData[mcuPrefix].bwDeltas.push(100 * (bw - plotData[mcuPrefix].lastBW) / (maxBandwidth * timeDelta));
+        plotData[mcuPrefix].loads.push(100 * load / TASK_MAX);
+        plotData[mcuPrefix].awake.push(100 * parseFloat(d['MCUs'][mcuPrefix]['mcu_awake'] || '0') / STATS_INTERVAL);
+        plotData[mcuPrefix].hostBuffers.push(hb);
+
         plotData[mcuPrefix].lastBW = bw;
-        continue;
       }
-
-      let load = parseFloat(d['MCUs'][mcuPrefix]['mcu_task_avg']) + (3 * parseFloat(d['MCUs'][mcuPrefix]['mcu_task_stddev']));
-
-      if (currentSampleTime - basetime < 15) {
-        load = 0; 
-      }
-
-      const pt = parseFloat(d['print_time']); 
-      let hb = parseFloat(d['buffer_time']);
-
-      if (hb >= MAXBUFFER || currentSampleTime in sampleResets) {
-        hb = 0; 
-      } else {
-        hb = 100 * (MAXBUFFER - hb) / MAXBUFFER; 
-      }
-
-      // Directly update plotData
-      plotData[mcuPrefix].times.push(new Date(currentSampleTime * 1000));
-      plotData[mcuPrefix].bwDeltas.push(100 * (bw - plotData[mcuPrefix].lastBW) / (maxBandwidth * timeDelta));
-      plotData[mcuPrefix].loads.push(100 * load / TASK_MAX);
-      plotData[mcuPrefix].awake.push(100 * parseFloat(d['MCUs'][mcuPrefix]['mcu_awake'] || '0') / STATS_INTERVAL);
-      plotData[mcuPrefix].hostBuffers.push(hb);
-
-      plotData[mcuPrefix].lastBW = bw;
     }
-  }
-  // console.log(plotData);
+  });
+
   // Graph creation
   const plotDiv1 = document.getElementById('plotDiv1');
 
   plotDiv1.innerHTML = '';
 
-  // Convert event keys to Date objects
-  const eventTimes = Object.keys(data.events).map((eventType) => ({
-    eventType,
-    events: data.events[eventType].map((event) => ({
-      time: new Date(parseFloat(event.sampleTime) * 1000),
-      message: event.message
-    }))
-  }));
+  const eventTimes = [];
+
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+    const sessionEvents = sessionData.events;
+
+    Object.keys(sessionEvents).forEach((eventType) => {
+      sessionEvents[eventType].forEach((event) => {
+        eventTimes.push({
+          time: new Date(parseFloat(event.sampleTime) * 1000),
+          message: event.message,
+          eventType
+        });
+      });
+    });
+  });
 
   for (const mcuPrefix in plotData) {
     // Create traces for this MCU
@@ -353,39 +400,37 @@ function plotMCU(data, maxBandwidth) {
       font: { size: 12 },
       legend: { orientation: 'h', y: -0.15 },
       grid: { columns: 1, pattern: 'independent', rows: 1 },
-      annotations: [], // Initialize shapes array
-      shapes: [] // Initialize shapes array
+      annotations: []
     };
 
     eventTimes.forEach((event) => {
-      event.events.forEach((evt) => {
-        let eventTypeText;
-        let arrowcolor;
+      let eventTypeText;
+      let arrowcolor;
 
-        switch (event.eventType) {
-          case 'starts':
-            arrowcolor = 'green';
-            eventTypeText = 'Start';
-            break;
-          case 'shutdowns':
-            arrowcolor = 'red';
-            eventTypeText = 'Shutdown';
-            break;
-        }
+      switch (event.eventType) {
+        case 'starts':
+          arrowcolor = 'green';
+          eventTypeText = 'Start';
+          break;
+        case 'shutdowns':
+          arrowcolor = 'red';
+          eventTypeText = 'Shutdown';
+          break;
+      }
 
-        layout.annotations.push({
-          x: evt.time,
-          y: 0, // Anchor the annotation to the x-axis (y = 0)
-          yref: 'paper', 
-          ayref: 'paper',
-          ax: 0, 
-          ay: 1, // Set the arrow length to 1, spanning the entire y-axis
-          arrowside: 'start',
-          arrowcolor,
-          hovertext: evt.message,
-          showarrow: true,
-          bgcolor: 'rgba(0, 0, 0, 0)'
-        });
+      layout.annotations.push({
+        x: event.time,
+        y: 0, // Anchor the annotation to the x-axis (y = 0)
+        yref: 'paper',
+        ayref: 'paper',
+        ax: 0,
+        ay: 1, // Set the arrow length to 1, spanning the entire y-axis
+        arrowside: 'start',
+        arrowcolor: arrowcolor,
+        arrowhead: 7,
+        hovertext: event.message,
+        showarrow: true,
+        bgcolor: 'rgba(0, 0, 0, 0)'
       });
     });
 
@@ -393,23 +438,46 @@ function plotMCU(data, maxBandwidth) {
   }
 }
 
-function plotSystem(data) {
-  const basetime = data.parsedData[0]['#sampletime'];
+// -----------------------------------------------------------------------------------------------
+// Plot System
+// -----------------------------------------------------------------------------------------------
+
+function plotSystem(data, session = 'all') {
+  const plotData = [];
+
+  // Determine which sessions to process
+  const sessionsToProcess = session === 'all' ? Object.keys(data) : [session];
+
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+
+    // Ensure sessionData and sessionData.datapoints exist
+    if (sessionData && sessionData.datapoints) {
+      plotData.push(...sessionData.datapoints);
+    }
+  });
+
+  if (plotData.length === 0) {
+    console.error('No data points available to plot.');
+
+    return;
+  }
+
+  const basetime = plotData[0]['#sampletime'];
   let lasttime = basetime;
-  let lastCPUTime = parseFloat(data.parsedData[0]['cputime']);
+  let lastCPUTime = parseFloat(plotData[0]['cputime']);
 
   const times = [];
   const sysLoads = [];
   const cpuTimes = [];
   const memAvails = [];
 
-  for (const d of data.parsedData) {
-    // console.log('plotSystem - d of data.parsedData:', d, typeof d);
+  for (const d of plotData) {
     const st = d['#sampletime'];
     const timedelta = st - lasttime;
 
     if (timedelta <= 0) {
-      continue; 
+      continue;
     }
 
     lasttime = st;
@@ -419,14 +487,9 @@ function plotSystem(data) {
     lastCPUTime = cpuTime;
 
     times.push(new Date(st * 1000));
-    // times.push(st);
-    // console.log('plotSystem - times:', times, typeof times);
     sysLoads.push(parseFloat(d['sysload']) * 100);
-    // console.log('plotSystem - sysLoads:', sysLoads, typeof sysLoads);
     cpuTimes.push(cpuDelta * 100);
-    // console.log('plotSystem - cpuTimes:', cpuTimes, typeof cpuTimes);
     memAvails.push(parseFloat(d['memavail']));
-    // console.log('plotSystem - memAvails:', memAvails, typeof memAvails);
   }
 
   // Plotly Setup
@@ -466,83 +529,98 @@ function plotSystem(data) {
     font: { size: 12 },
     legend: { orientation: 'h', y: -0.15 },
     grid: { rows: 1, columns: 1, pattern: 'independent' },
-    annotations: [], // Initialize shapes array
-    shapes: [] // Initialize shapes array
+    annotations: [],
+    shapes: []
   };
 
-  const eventTimes = Object.keys(data.events).map((eventType) => ({
-    eventType,
-    events: data.events[eventType].map((event) => ({
-      time: new Date(parseFloat(event.sampleTime) * 1000),
-      message: event.message
-    }))
-  }));
-  
-  eventTimes.forEach((event) => {
-    event.events.forEach((evt) => {
-      let eventTypeText;
-      let arrowcolor;
+  const eventTimes = [];
 
-      switch (event.eventType) {
-        case 'starts':
-          arrowcolor = 'green';
-          eventTypeText = 'Start';
-          break;
-        case 'shutdowns':
-          arrowcolor = 'red';
-          eventTypeText = 'Shutdown';
-          break;
-      }
-    
-      layout.annotations.push({
-        x: evt.time,
-        y: 0, // Anchor the annotation to the x-axis (y = 0)
-        yref: 'paper', 
-        ayref: 'paper',
-        ax: 0, 
-        ay: 1, // Set the arrow length to 1, spanning the entire y-axis
-        arrowside: 'start',
-        arrowcolor,
-        hovertext: evt.message,
-        showarrow: true,
-        bgcolor: 'rgba(0, 0, 0, 0)'
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+
+    if (sessionData && sessionData.events) {
+      Object.keys(sessionData.events).forEach((eventType) => {
+        sessionData.events[eventType].forEach((event) => {
+          eventTimes.push({
+            time: new Date(parseFloat(event.sampleTime) * 1000),
+            message: event.message,
+            eventType
+          });
+        });
       });
+    }
+  });
+
+  eventTimes.forEach((event) => {
+    let arrowcolor;
+
+    switch (event.eventType) {
+      case 'starts':
+        arrowcolor = 'green';
+        break;
+      case 'shutdowns':
+        arrowcolor = 'red';
+        break;
+    }
+
+    layout.annotations.push({
+      x: event.time,
+      y: 0,
+      yref: 'paper',
+      ayref: 'paper',
+      ax: 0,
+      ay: 1,
+      arrowside: 'start',
+      arrowcolor: arrowcolor,
+      arrowhead: 7,
+      hovertext: event.message,
+      showarrow: true,
+      bgcolor: 'rgba(0, 0, 0, 0)'
     });
   });
-  
+
   Plotly.newPlot('plotDiv2', traces, layout, { responsive: true });
 }
+// -----------------------------------------------------------------------------------------------
+// Plot MCU Frequencies
+// -----------------------------------------------------------------------------------------------
 
-function plotMCUFrequencies(data) {
-  // Collect and Filter Keys
+function plotMCUFrequencies(data, session = 'all') {
   const graphKeys = {};
 
-  for (const d of data.parsedData) {
-    const mcuPrefixes = Object.keys(d.MCUs);
+  // Determine which sessions to process
+  const sessionsToProcess = session === 'all' ? Object.keys(data) : [session];
 
-    for (const mcuPrefix of mcuPrefixes) {
-      const mcuData = d.MCUs[mcuPrefix];
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
 
-      for (const key in mcuData) {
-        const fullKey = `${mcuPrefix}:${key}`;
+    for (const d of sessionData.datapoints) {
+      const mcuPrefixes = Object.keys(d.MCUs);
 
-        if (key === 'freq' || key === 'adj') {
-          if (!graphKeys[fullKey]) {
-            graphKeys[fullKey] = [[], []];
-          }
+      for (const mcuPrefix of mcuPrefixes) {
+        const mcuData = d.MCUs[mcuPrefix];
 
-          const [times, values] = graphKeys[fullKey];
-          const st = new Date(d['#sampletime'] * 1000);
-          const val = mcuData[key];
+        for (const key in mcuData) {
+          const fullKey = `${mcuPrefix}:${key}`;
 
-          if (val !== undefined && val !== '0' && val !== '1') {
-            times.push(st);
-            values.push(parseFloat(val));
+          if (key === 'freq' || key === 'adj') {
+            if (!graphKeys[fullKey]) {
+              graphKeys[fullKey] = [[], []];
+            }
+
+            const [times, values] = graphKeys[fullKey];
+            const st = new Date(d['#sampletime'] * 1000);
+            const val = mcuData[key];
+
+            if (val !== undefined && val !== '0' && val !== '1') {
+              times.push(st);
+              values.push(parseFloat(val));
+            }
           }
         }
       }
     }
-  }
+  });
 
   // Calculate Estimated MHz
   const estMhz = {};
@@ -583,93 +661,125 @@ function plotMCUFrequencies(data) {
     shapes: [] // Initialize shapes array
   };
 
-  const eventTimes = Object.keys(data.events).map((eventType) => ({
-    eventType,
-    events: data.events[eventType].map((event) => ({
-      time: new Date(parseFloat(event.sampleTime) * 1000),
-      message: event.message
-    }))
-  }));
+  const eventTimes = [];
 
-  eventTimes.forEach((event) => {
-    event.events.forEach((evt) => {
-      let eventTypeText;
-      let arrowcolor;
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+    const sessionEvents = sessionData.events;
 
-      switch (event.eventType) {
-        case 'starts':
-          arrowcolor = 'green';
-          eventTypeText = 'Start';
-          break; case 'shutdowns':
-          arrowcolor = 'red';
-          eventTypeText = 'Shutdown';
-          break;
-        case 'ntj':
-          arrowcolor = 'black';
-          eventTypeText = 'Negative time jump';
-          break;
-      }
-    
-      layout.annotations.push({
-        x: evt.time,
-        y: 0, // Anchor the annotation to the x-axis (y = 0)
-        yref: 'paper', 
-        ayref: 'paper',
-        ax: 0, 
-        ay: 1, // Set the arrow length to 1, spanning the entire y-axis
-        arrowside: 'start',
-        arrowcolor,
-        hovertext: evt.message,
-        showarrow: true,
-        bgcolor: 'rgba(0, 0, 0, 0)'
+    Object.keys(sessionEvents).forEach((eventType) => {
+      sessionEvents[eventType].forEach((event) => {
+        eventTimes.push({
+          time: new Date(parseFloat(event.sampleTime) * 1000),
+          message: event.message,
+          eventType
+        });
       });
     });
   });
-  
+
+  eventTimes.forEach((event) => {
+    let arrowcolor;
+    let eventTypeText;
+
+    switch (event.eventType) {
+      case 'starts':
+        arrowcolor = 'green';
+        eventTypeText = 'Start';
+        break;
+      case 'shutdowns':
+        arrowcolor = 'red';
+        eventTypeText = 'Shutdown';
+        break;
+      case 'ntj':
+        arrowcolor = 'black';
+        eventTypeText = 'Negative time jump';
+        break;
+    }
+
+    layout.annotations.push({
+      x: event.time,
+      y: 0, // Anchor the annotation to the x-axis (y = 0)
+      yref: 'paper',
+      ayref: 'paper',
+      ax: 0,
+      ay: 1, // Set the arrow length to 1, spanning the entire y-axis
+      arrowside: 'start',
+      arrowcolor: arrowcolor,
+      arrowhead: 7,
+      hovertext: event.message,
+      showarrow: true,
+      bgcolor: 'rgba(0, 0, 0, 0)'
+    });
+  });
+
   Plotly.newPlot('plotDiv3', plotData, layout);
 }
 
-function plotTemperature(data) {
+// -----------------------------------------------------------------------------------------------
+// Plot Plot Temperatures
+// -----------------------------------------------------------------------------------------------
+
+function plotTemperature(data, session = 'all') {
   const heaterData = {};
 
-  for (const d of data.parsedData) {
-    const heaters = Object.keys(d.Heaters);
+  // Determine which sessions to process
+  const sessionsToProcess = session === 'all' ? Object.keys(data) : [session];
 
-    for (const heater of heaters) {
-      if (!heaterData[heater]) {
-        heaterData[heater] = {
-          heater,
-          times: [],
-          temps: [],
-          targets: [],
-          pwms: []
-        };
+  // Collect data for the specified session(s)
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+
+    if (sessionData && sessionData.datapoints) {
+      for (const d of sessionData.datapoints) {
+        const heaters = Object.keys(d.Heaters);
+
+        for (const heater of heaters) {
+          if (!heaterData[heater]) {
+            heaterData[heater] = {
+              heater,
+              times: [],
+              temps: [],
+              targets: [],
+              pwms: []
+            };
+          }
+
+          const heaterValues = d.Heaters[heater];
+          const currentSampleTime = d['#sampletime'];
+
+          // Store the data with the corrected timestamp
+          heaterData[heater].times.push(new Date(currentSampleTime * 1000));
+          heaterData[heater].temps.push(parseFloat(heaterValues.temp));
+          heaterData[heater].targets.push(parseFloat(heaterValues.target) || 0);
+          heaterData[heater].pwms.push(parseFloat(heaterValues.pwm) || 0);
+        }
       }
-
-      const heaterValues = d.Heaters[heater];
-      const currentSampleTime = d['#sampletime'];
-
-      // Store the data with the corrected timestamp
-      heaterData[heater].times.push(new Date(currentSampleTime * 1000));
-      heaterData[heater].temps.push(parseFloat(heaterValues.temp));
-      heaterData[heater].targets.push(parseFloat(heaterValues.target) || 0);
-      heaterData[heater].pwms.push(parseFloat(heaterValues.pwm) || 0);
     }
-  }
+  });
 
- 
   // Create divs and plot for each heater
   const plotDiv4 = document.getElementById('plotDiv4');
 
-  plotDiv4.innerHTML = '';
-  
-  const eventTimes = Object.keys(data.events).map((eventType) => ({
-    eventType,
-    events: data.events[eventType].map((event) => ({
-      time: new Date(parseFloat(event.sampleTime) * 1000),
-      message: event.message
-    }))
-  }));
+  plotDiv4.innerHTML = ''; // Clear any existing content
+
+  const eventTimes = [];
+
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+
+    if (sessionData && sessionData.events) {
+      Object.keys(sessionData.events).forEach((eventType) => {
+        sessionData.events[eventType].forEach((event) => {
+          eventTimes.push({
+            time: new Date(parseFloat(event.sampleTime) * 1000),
+            message: event.message,
+            eventType
+          });
+        });
+      });
+    }
+  });
 
   for (const heaterInfo of Object.values(heaterData)) {
     const heaterDiv = document.createElement('div');
@@ -685,7 +795,7 @@ function plotTemperature(data) {
         type: 'scatter',
         mode: 'lines',
         line: { color: 'orange' }
-      }  
+      }
     ];
 
     if (heaterInfo.targets.some(Boolean)) {
@@ -707,11 +817,10 @@ function plotTemperature(data) {
         type: 'scatter',
         mode: 'lines',
         line: { color: 'darkgray', width: 0.8, opacity: 0.5, dash: 'dash' },
-        yaxis: 'y2' // Plot on secondary y-axis
+        yaxis: 'y2'
       });
     }
 
-    // Create layout with secondary y-axis and annotations
     const layout = {
       title: `Temperatures - ${heaterInfo.heater}`,
       xaxis: { title: 'Time' },
@@ -724,76 +833,83 @@ function plotTemperature(data) {
       font: { size: 12 },
       legend: { orientation: 'h', y: -0.15 },
       grid: { columns: 1, pattern: 'independent', rows: 1 },
-      annotations: [], // Initialize shapes array
-      shapes: [] // Initialize shapes array
+      annotations: [],
+      shapes: []
     };
 
-
     eventTimes.forEach((event) => {
-      event.events.forEach((evt) => {
-        let eventTypeText;
-        let arrowcolor;
+      let arrowcolor;
 
-        switch (event.eventType) {
-          case 'starts':
-            arrowcolor = 'green';
-            eventTypeText = 'Start';
-            break;
-          case 'shutdowns':
-            arrowcolor = 'red';
-            eventTypeText = 'Shutdown';
-            break;
-        }
-    
-        layout.annotations.push({
-          x: evt.time,
-          y: 0, // Anchor the annotation to the x-axis (y = 0)
-          yref: 'paper', 
-          ayref: 'paper',
-          ax: 1, 
-          ay: 1, // Set the arrow length to 1, spanning the entire y-axis
-          arrowside: 'start',
-          arrowcolor,
-          hovertext: evt.message,
-          showarrow: true,
-          bgcolor: 'rgba(0, 0, 0, 0)'
-        });
+      switch (event.eventType) {
+        case 'starts':
+          arrowcolor = 'green';
+          break;
+        case 'shutdowns':
+          arrowcolor = 'red';
+          break;
+      }
+
+      layout.annotations.push({
+        x: event.time,
+        y: 0,
+        yref: 'paper',
+        ayref: 'paper',
+        ax: 0,
+        ay: 1,
+        arrowside: 'start',
+        arrowcolor: arrowcolor,
+        arrowhead: 7,
+        hovertext: event.message,
+        showarrow: true,
+        bgcolor: 'rgba(0, 0, 0, 0)'
       });
     });
-  
-    Plotly.newPlot(`plot_${heaterInfo.heater}`, traces, layout);
+
+    Plotly.newPlot(heaterDiv.id, traces, layout);
   }
 }
 
-function plotAdvancedData(data) {
-  // console.log(data);
+// -----------------------------------------------------------------------------------------------
+// Plot Advanced Data
+// -----------------------------------------------------------------------------------------------
+
+function plotAdvancedData(data, session = 'all') {
   const plotData = {};
 
-  for (const d of data.parsedData) {
-    const mcuPrefixes = Object.keys(d.MCUs);
+  // Determine which sessions to process
+  const sessionsToProcess = session === 'all' ? Object.keys(data) : [session];
 
-    for (const mcuPrefix of mcuPrefixes) {
-      if (!plotData[mcuPrefix]) {
-        plotData[mcuPrefix] = {
-          times: [],
-          srtt: [],
-          rttvar: [],
-          rto: [],
-          ready_bytes: [],
-          upcoming_bytes: []
-        };
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+
+    if (sessionData && sessionData.datapoints) {
+      for (const d of sessionData.datapoints) {
+        const mcuPrefixes = Object.keys(d.MCUs);
+
+        for (const mcuPrefix of mcuPrefixes) {
+          if (!plotData[mcuPrefix]) {
+            plotData[mcuPrefix] = {
+              times: [],
+              srtt: [],
+              rttvar: [],
+              rto: [],
+              ready_bytes: [],
+              upcoming_bytes: []
+            };
+          }
+
+          const currentSampleTime = d['#sampletime'];
+
+          plotData[mcuPrefix].times.push(new Date(currentSampleTime * 1000));
+          plotData[mcuPrefix].srtt.push(parseFloat(d.MCUs[mcuPrefix].srtt));
+          plotData[mcuPrefix].rttvar.push(parseFloat(d.MCUs[mcuPrefix].rttvar));
+          plotData[mcuPrefix].rto.push(parseFloat(d.MCUs[mcuPrefix].rto));
+          plotData[mcuPrefix].ready_bytes.push(parseFloat(d.MCUs[mcuPrefix].ready_bytes));
+          plotData[mcuPrefix].upcoming_bytes.push(parseFloat(d.MCUs[mcuPrefix].upcoming_bytes));
+        }
       }
-
-      const currentSampleTime = d['#sampletime'];
-
-      plotData[mcuPrefix].times.push(new Date(currentSampleTime * 1000));
-      plotData[mcuPrefix].srtt.push(parseFloat(d.MCUs[mcuPrefix].srtt));
-      plotData[mcuPrefix].rttvar.push(parseFloat(d.MCUs[mcuPrefix].rttvar));
-      plotData[mcuPrefix].rto.push(parseFloat(d.MCUs[mcuPrefix].rto));
-      plotData[mcuPrefix].ready_bytes.push(parseFloat(d.MCUs[mcuPrefix].ready_bytes));
-      plotData[mcuPrefix].upcoming_bytes.push(parseFloat(d.MCUs[mcuPrefix].upcoming_bytes));
     }
-  }
+  });
 
   // Parent container for all advanced graphs
   const plotDiv5 = document.getElementById('plotDiv5');
@@ -801,13 +917,23 @@ function plotAdvancedData(data) {
   plotDiv5.innerHTML = ''; // Clear any existing content
 
   // Convert event keys to Date objects
-  const eventTimes = Object.keys(data.events).map((eventType) => ({
-    eventType,
-    events: data.events[eventType].map((event) => ({
-      time: new Date(parseFloat(event.sampleTime) * 1000),
-      message: event.message
-    }))
-  }));
+  const eventTimes = [];
+
+  sessionsToProcess.forEach((sessionKey) => {
+    const sessionData = data[sessionKey];
+
+    if (sessionData && sessionData.events) {
+      Object.keys(sessionData.events).forEach((eventType) => {
+        sessionData.events[eventType].forEach((event) => {
+          eventTimes.push({
+            time: new Date(parseFloat(event.sampleTime) * 1000),
+            message: event.message,
+            eventType
+          });
+        });
+      });
+    }
+  });
 
   const metrics = ['srtt', 'rttvar', 'rto', 'ready_bytes', 'upcoming_bytes'];
 
@@ -842,34 +968,30 @@ function plotAdvancedData(data) {
       };
 
       eventTimes.forEach((event) => {
-        event.events.forEach((evt) => {
-          let eventTypeText;
-          let arrowcolor;
+        let arrowcolor;
 
-          switch (event.eventType) {
-            case 'starts':
-              arrowcolor = 'green';
-              eventTypeText = 'Start';
-              break;
-            case 'shutdowns':
-              arrowcolor = 'red';
-              eventTypeText = 'Shutdown';
-              break;
-          }
+        switch (event.eventType) {
+          case 'starts':
+            arrowcolor = 'green';
+            break;
+          case 'shutdowns':
+            arrowcolor = 'red';
+            break;
+        }
 
-          layout.annotations.push({
-            x: evt.time,
-            y: 0,
-            yref: 'paper',
-            ayref: 'paper',
-            ax: 0,
-            ay: 1,
-            arrowside: 'start',
-            arrowcolor,
-            hovertext: evt.message,
-            showarrow: true,
-            bgcolor: 'rgba(0, 0, 0, 0)'
-          });
+        layout.annotations.push({
+          x: event.time,
+          y: 0,
+          yref: 'paper',
+          ayref: 'paper',
+          ax: 0,
+          ay: 1,
+          arrowside: 'start',
+          arrowcolor: arrowcolor,
+          arrowhead: 7,
+          hovertext: event.message,
+          showarrow: true,
+          bgcolor: 'rgba(0, 0, 0, 0)'
         });
       });
 
@@ -878,6 +1000,8 @@ function plotAdvancedData(data) {
   }
 }
 
+
+/*
 $(document).ready(() => {
   document.getElementById('buttonProcess').addEventListener('click', () => {
     const fileInput = document.getElementById('fileInput');
@@ -903,3 +1027,4 @@ $(document).ready(() => {
     }
   });
 });
+*/
