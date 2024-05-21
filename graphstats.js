@@ -240,7 +240,6 @@ function findPrintRestarts(data) {
     Object.entries(runoffSamples)
       .flatMap(([startTime, [stall, samples]]) => samples.filter((time) => !stall).map((time) => [time, 1]))
   );
-  // console.log(sampleResets);
 
   return sampleResets;
 }
@@ -250,10 +249,8 @@ function findPrintRestarts(data) {
 // -----------------------------------------------------------------------------------------------
 
 function plotMCU(data, maxBandwidth, session = 'all') {
-  // console.log(data);
   const plotData = {};
   const previousSampleTimes = {};
-  const sampleResets = findPrintRestarts(data);
 
   // Determine which sessions to process
   const sessionsToProcess = session === 'all' ? Object.keys(data) : [session];
@@ -261,6 +258,7 @@ function plotMCU(data, maxBandwidth, session = 'all') {
   sessionsToProcess.forEach((sessionKey) => {
     const sessionData = data[sessionKey];
     const basetime = sessionData.baseTimeStamp;
+    const sampleResets = findPrintRestarts(sessionData.datapoints);
 
     for (const d of sessionData.datapoints) {
       const mcuPrefixes = Object.keys(d.MCUs);
@@ -717,7 +715,7 @@ function plotMCUFrequencies(data, session = 'all') {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Plot Plot Temperatures
+// Plot Temperatures
 // -----------------------------------------------------------------------------------------------
 
 function plotTemperature(data, session = 'all') {
