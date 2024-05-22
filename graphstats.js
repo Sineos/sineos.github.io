@@ -8,8 +8,75 @@ const MAXBUFFER = 2;
 const STATS_INTERVAL = 5;
 const TASK_MAX = 0.0025;
 
+const DB_NAME = 'LogDB';
+const DB_VERSION = 1;
+const DB_STORE_NAME = 'parsedLogs';
+
+
 // -----------------------------------------------------------------------------------------------
-// Parse Log
+// Open browser's IndexDB
+// -----------------------------------------------------------------------------------------------
+
+function openDb(callback) {
+  const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+  request.onsuccess = function(event) {
+    callback(event.target.result);
+  };
+
+  request.onupgradeneeded = function(event) {
+    const db = event.target.result;
+
+    if (db.objectStoreNames.contains(DB_STORE_NAME)) {
+      db.deleteObjectStore(DB_STORE_NAME);
+    }
+
+    db.createObjectStore(DB_STORE_NAME, { keyPath: 'id' });
+  };
+
+  request.onerror = function(event) {
+    console.error('Error opening IndexedDB:', event.target.error);
+  };
+}
+
+// -----------------------------------------------------------------------------------------------
+// Add data to browser's IndexDB
+// -----------------------------------------------------------------------------------------------
+
+function addParsedLogData(db, parsedData, callback) {
+  const transaction = db.transaction([DB_STORE_NAME], 'readwrite');
+  const store = transaction.objectStore(DB_STORE_NAME);
+  const request = store.put({ id: 'parsedLogData', content: parsedData });
+
+  request.onsuccess = function() {
+    callback();
+  };
+
+  request.onerror = function(event) {
+    console.error('Error storing parsed log data:', event.target.error);
+  };
+}
+
+// -----------------------------------------------------------------------------------------------
+// Get data from browser's IndexDB
+// -----------------------------------------------------------------------------------------------
+
+function getParsedLogData(db, callback) {
+  const transaction = db.transaction([DB_STORE_NAME], 'readonly');
+  const store = transaction.objectStore(DB_STORE_NAME);
+  const request = store.get('parsedLogData');
+
+  request.onsuccess = function(event) {
+    callback(event.target.result.content);
+  };
+
+  request.onerror = function(event) {
+    console.error('Error retrieving parsed log data:', event.target.error);
+  };
+}
+
+// -----------------------------------------------------------------------------------------------
+// Parse klippy.log
 // -----------------------------------------------------------------------------------------------
 
 const APPLY_PREFIX_MCU = [
@@ -89,9 +156,10 @@ function parseLog(logData) {
     if (skippedStats.length > 0) {
       const lastSkipped = skippedStats[skippedStats.length - 1].statsTimestamp;
       const firstSkipped = skippedStats[0].statsTimestamp;
-      let virtualBaseTimeStamp = baseTimeStamp - lastSkipped + firstSkipped;
+      let virtualBaseTimeStamp = (baseTimeStamp - lastSkipped + firstSkipped).toFixed(1);
 
-      // Adjust virtualBaseTimeStamp by subtracting 1 second
+      // Adjust virtualBaseTimeStamp by subtracting 1 second to avoid overwriting
+	  // timestamps at the "border
       virtualBaseTimeStamp -= 1;
 
       const virtualStartMessage = `Virtual Start (${new Date(virtualBaseTimeStamp * 1000).toLocaleString()})`;
@@ -142,7 +210,7 @@ function parseLog(logData) {
       const match = line.match(/at\s+(.*) \((\d+\.\d+)\s+(\d+\.\d+)\)/);
 
       if (match) {
-        baseTimeStamp = parseFloat(match[2]);
+        baseTimeStamp = parseFloat(match[2]).toFixed(1);
         monotonicAdjustment = null; // Reset monotonic adjustment
         skippedMonotonicAdjustment = null; // Reset skipped monotonic adjustment
         processSkippedStats();
@@ -162,7 +230,7 @@ function parseLog(logData) {
       const match = line.match(/at\s+(.*) =+/);
 
       if (match) {
-        baseTimeStamp = new Date(match[1]).getTime() / 1000;
+        baseTimeStamp = (new Date(match[1]).getTime() / 1000).toFixed(1);
         monotonicAdjustment = null; // Reset monotonic adjustment
         skippedMonotonicAdjustment = null; // Reset skipped monotonic adjustment
         processSkippedStats();
@@ -190,6 +258,7 @@ function parseLog(logData) {
 
   return sessions;
 }
+
 
 // -----------------------------------------------------------------------------------------------
 // Find Printer Restarts
@@ -258,6 +327,7 @@ function plotMCU(data, maxBandwidth, session = 'all') {
   sessionsToProcess.forEach((sessionKey) => {
     const sessionData = data[sessionKey];
     const basetime = sessionData.baseTimeStamp;
+
     const sampleResets = findPrintRestarts(sessionData.datapoints);
 
     for (const d of sessionData.datapoints) {
@@ -997,32 +1067,3 @@ function plotAdvancedData(data, session = 'all') {
     });
   }
 }
-
-
-/*
-$(document).ready(() => {
-  document.getElementById('buttonProcess').addEventListener('click', () => {
-    const fileInput = document.getElementById('fileInput');
-
-    if (fileInput.files.length > 0) {
-      const file = fileInput.files[0];
-      const reader = new FileReader();
-
-      reader.onload = function(event) {
-        const logData = event.target.result;
-        const parsedData = parseLog(logData);
-
-        plotMCU(parsedData, MAXBANDWIDTH);
-        plotSystem(parsedData);
-        plotMCUFrequencies(parsedData);
-        plotTemperature(parsedData);
-        plotAdvancedData(parsedData);
-      };
-
-      reader.readAsText(file);
-    } else {
-      alert('Please select a log file');
-    }
-  });
-});
-*/

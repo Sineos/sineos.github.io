@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
+  <head>
     <meta charset="UTF-8">
     <title>Graph Klipper Stats</title>
     <script language="JavaScript" type="text/javascript" src="https://cdn.plot.ly/plotly-latest.min.js"></script>
@@ -8,116 +8,113 @@
     <script language="JavaScript" type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
     <script language="JavaScript" type="text/javascript" src="./graphstats.js"></script>
     <style>
-        #header {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background-color: #fff;
-            z-index: 1000;
-            display: flex; /* Enable Flexbox for header */
-            align-items: center; /* Vertically align items */
-            gap: 20px; /* Consistent gap between button and select */
-            padding: 10px; /* Add some padding */
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        #graphs {
-            margin-top: 60px; /* Height of the header */
-        }
-
-        #backButton,
-        #sessionSelect {
-            display: inline-block; /* Buttons next to each other */
-        }
+      #header { position: fixed; top: 0; left: 0; right: 0; background-color: #fff; z-index: 1000; display: flex; align-items: center; gap: 20px; padding: 10px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
+      #graphs { margin-top: 60px; }
+      #backButton, #sessionSelect { display: inline-block; }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div id="header">
-        <button id="backButton">Back</button>
-        <select id="sessionSelect"></select>
+      <button id="backButton">Back</button>
+      <select id="sessionSelect"></select>
     </div>
     <div id="graphs">
-        <div id="plotDiv1"></div>
-        <div id="plotDiv2"></div>
-        <div id="plotDiv3"></div>
-        <div id="plotDiv4"></div>
-        <div id="plotDiv5"></div>
+      <div id="plotDiv1"></div>
+      <div id="plotDiv2"></div>
+      <div id="plotDiv3"></div>
+      <div id="plotDiv4"></div>
+      <div id="plotDiv5"></div>
     </div>
     <script>
+      const HREF = 'index2.html';
+
       document.getElementById('backButton').addEventListener('click', () => {
-        window.location.href = 'index2.html';
+        window.location.href = HREF;
       });
 
-      const logData = sessionStorage.getItem('logData');
+      openDb((db) => {
+        getParsedLogData(db, (parsedData) => {
+          if (!parsedData) {
+            return;
+          }
+          const sessionSelect = document.getElementById('sessionSelect');
+          const sessions = Object.keys(parsedData);
 
-      if (logData) {
-        const parsedData = parseLog(logData);
-        const sessionSelect = document.getElementById('sessionSelect');
-        const sessions = Object.keys(parsedData);
+          // Session Option Generation
+          sessionSelect.innerHTML = '<option value="all">All Sessions</option>';
+          sessions.forEach((key, index) => {
+            const timeStamp = new Date(Number(key) * 1000).toLocaleString();
+            const dataPoints = parsedData[key].datapoints.length;
+            const option = document.createElement('option');
 
-        // Session Option Generation
-        sessionSelect.innerHTML = '<option value="all">All Sessions</option>';
-        sessions.forEach((key, index) => {
-          const timeStamp = new Date(Number(key) * 1000).toLocaleString(); // Convert key to number
+            option.value = key;
+            option.text = `Session ${index + 1}: ${timeStamp} (${dataPoints} data points)`;
+            if (dataPoints === 0) {
+              option.disabled = true;
+            }
+            sessionSelect.appendChild(option);
+          });
 
-          sessionSelect.innerHTML += `<option value="${key}">Session ${index + 1}: ${timeStamp} (${parsedData[key].datapoints.length} data points)</option>`;
-        });
+          sessionSelect.addEventListener('change', () => {
+            const selectedSession = sessionSelect.value;
 
-        sessionSelect.addEventListener('change', () => {
-          const selectedSession = sessionSelect.value;
+            // Clear previous plots
+            [...document.querySelectorAll('#graphs > div')].forEach((div) => div.innerHTML = '');
 
-          // Clear previous plots
-          [...document.querySelectorAll('#graphs > div')].forEach((div) => div.innerHTML = '');
-
-          // Plotting functions
-          if (selectedSession === 'all') {
-            plotMCU(parsedData, MAXBANDWIDTH, selectedSession);
-            plotSystem(parsedData, selectedSession);
-            plotMCUFrequencies(parsedData, selectedSession);
-            plotTemperature(parsedData, selectedSession);
-            plotAdvancedData(parsedData, selectedSession);
-          } else if (parsedData[selectedSession]) {
-            const sessionDataPoints = parsedData[selectedSession].datapoints;
-
-            if (sessionDataPoints.length === 0) {
-              alert('Session with 0 data-points selected. Switching to All Sessions.');
-              sessionSelect.value = 'all'; // Select "All Sessions"
-              plotMCU(parsedData, MAXBANDWIDTH, 'all'); // Re-plot for all sessions
+            // Plotting functions
+            if (selectedSession === 'all') {
+              plotMCU(parsedData, MAXBANDWIDTH, 'all');
               plotSystem(parsedData, 'all');
               plotMCUFrequencies(parsedData, 'all');
               plotTemperature(parsedData, 'all');
               plotAdvancedData(parsedData, 'all');
+            } else if (parsedData[selectedSession]) {
+              const sessionData = {
+                [selectedSession]: parsedData[selectedSession]
+              };
 
-              return; // Break the operation
+              plotMCU(sessionData, MAXBANDWIDTH, selectedSession);
+              plotSystem(sessionData, selectedSession);
+              plotMCUFrequencies(sessionData, selectedSession);
+              plotTemperature(sessionData, selectedSession);
+              plotAdvancedData(sessionData, selectedSession);
+            } else {
+              alert(`Error: Session ${selectedSession} not found.`);
             }
+          });
 
-            const sessionData = {
-              [selectedSession]: parsedData[selectedSession]
-            };
+          // Initial plot call
+          const initialSession = sessionSelect.value || 'all';
 
-            plotMCU(sessionData, MAXBANDWIDTH, selectedSession);
-            plotSystem(sessionData, selectedSession);
-            plotMCUFrequencies(sessionData, selectedSession);
-            plotTemperature(sessionData, selectedSession);
-            plotAdvancedData(sessionData, selectedSession);
-          } else {
-            alert(`Error: Session ${selectedSession} not found.`);
-          }
+          plotMCU(parsedData, MAXBANDWIDTH, initialSession);
+          plotSystem(parsedData, initialSession);
+          plotMCUFrequencies(parsedData, initialSession);
+          plotTemperature(parsedData, initialSession);
+          plotAdvancedData(parsedData, initialSession);
         });
+      });
 
-        // Initial plot call
-        const initialSession = sessionSelect.value || 'all';
+      window.addEventListener('beforeunload', () => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-        plotMCU(parsedData, MAXBANDWIDTH, initialSession);
-        plotSystem(parsedData, initialSession);
-        plotMCUFrequencies(parsedData, initialSession);
-        plotTemperature(parsedData, initialSession);
-        plotAdvancedData(parsedData, initialSession);
-      } else {
-        alert('No log data found. Please go back and upload a log file.');
-      }
+        request.onsuccess = function() {
+          const db = request.result;
+          const transaction = db.transaction(DB_STORE_NAME, 'readwrite');
+          const logStore = transaction.objectStore(DB_STORE_NAME);
 
+          logStore.clear().onsuccess = function() {
+            console.log('IndexedDB store cleared on window unload');
+          };
+
+          logStore.clear().onerror = function(event) {
+            console.error('Error clearing IndexedDB store:', event.target.error);
+          };
+        };
+
+        request.onerror = function(event) {
+          console.error('Error opening IndexedDB for clearing:', event.target.error);
+        };
+      });
     </script>
-</body>
+  </body>
 </html>

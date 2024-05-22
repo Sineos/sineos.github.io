@@ -4,36 +4,25 @@
     <meta charset="UTF-8">
     <title>Graph Klipper Stats</title>
     <script language="JavaScript" type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="./graphstats.js"></script>
     <style>
-      #fileInput { /* Add style for the file input */
-      margin-bottom: 10px; /* Add a bottom margin to create space */
-      }
-      .button-container {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      }
-      #buttonProcess {
-      width: auto; /* or use max-width: fit-content; */
-      align-self: flex-start; /* Align button to the start of the container */
-      }
+      #fileInput { margin-bottom: 10px; }
+      .button-container { display: flex; flex-direction: column; gap: 10px; }
+      #buttonProcess { width: auto; align-self: flex-start; }
     </style>
   </head>
   <body>
     <h1>Graph Klipper Stats</h1>
     <div>
-      <p>
-        This webpage uses the logic of Klipper's
+      <p>This webpage uses the logic of Klipper's
         <a href="https://github.com/Klipper3d/klipper/blob/master/scripts/graphstats.py" target="_blank">graphstats.py</a>
         to analyze a <code>klippy.log</code> and display the results in graphs. This is a direct transformation of the Python
         script and thus based on the original work of Kevin O'Connor.
       </p>
-      <p>
-        For the sources and license information see
+      <p>For the sources and license information see
         <a href="https://github.com/Sineos/sineos.github.io" target="_blank">the GH repository</a>.
       </p>
-      <p>
-        Just browse for the <code>klippy.log</code> using the button below and press "Process Log".
+      <p>Just browse for the <code>klippy.log</code> using the button below and press "Process Log".
       </p>
     </div>
     <div>
@@ -52,9 +41,17 @@
 
           reader.onload = function(event) {
             const logData = event.target.result;
+            const parsedData = parseLog(logData);
 
-            sessionStorage.setItem('logData', logData);
-            window.location.href = 'graphs.html';
+            openDb((db) => {
+              addParsedLogData(db, parsedData, () => {
+                window.location.href = 'graphs.html';
+              });
+            });
+          };
+
+          reader.onerror = function(event) {
+            console.error('Error reading file:', event.target.error);
           };
 
           reader.readAsText(file);
