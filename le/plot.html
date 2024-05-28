@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plot Data</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="logextract.js"></script>
+    <style>
+      body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      }
+      #header {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      background-color: #f1f1f1;
+      padding: 10px;
+      box-shadow: 0px 4px 2px -2px gray;
+      z-index: 1000;
+      }
+      #graphs, #rtt-graphs {
+      margin-top: 120px; /* Adjust based on header height */
+      padding: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="header">
+      <h1>Plot Data</h1>
+      <select id="fileDropdown"></select>
+    </div>
+    <div id="graphs"></div>
+    <div id="rtt-graphs"></div>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const dbManager = new IndexedDBManager('LogDatabase', 1, () => {
+          populateDropdown(dbManager);
+        });
+      });
+
+      function populateDropdown(dbManager) {
+        dbManager.getAllKeys('shutdown', (keys) => {
+          const dropdown = document.getElementById('fileDropdown');
+
+          dropdown.innerHTML = ''; // Clear previous options
+
+          keys.forEach((key) => {
+            const option = document.createElement('option');
+
+            option.value = key;
+            option.text = key;
+            dropdown.appendChild(option);
+          });
+
+          if (keys.length > 0) {
+            loadFileContent(dbManager, keys[0]);
+          }
+        });
+
+        document.getElementById('fileDropdown').addEventListener('change', (event) => {
+          loadFileContent(dbManager, event.target.value);
+        });
+      }
+
+      function loadFileContent(dbManager, key) {
+        dbManager.get('shutdown', key, (content) => {
+          const plotData = new PlotData();
+
+          content.split('\n').forEach((line) => plotData.parseLine(line));
+          const graphs = plotData.generateGraphs();
+          const rttGraph = plotData.generateRTTGraphs(); // Generate RTT graph
+
+          const graphsDiv = document.getElementById('graphs');
+
+          graphsDiv.innerHTML = ''; // Clear previous graphs
+
+          const rttGraphsDiv = document.getElementById('rtt-graphs');
+
+          rttGraphsDiv.innerHTML = ''; // Clear previous RTT graphs
+
+          graphs.forEach((graph) => {
+            const graphDiv = document.createElement('div');
+
+            graphsDiv.appendChild(graphDiv);
+            Plotly.newPlot(graphDiv, graph.data, graph.layout, graph.config);
+          });
+
+          rttGraph.forEach((graph) => {
+            const rttGraphDiv = document.createElement('div');
+
+            rttGraphsDiv.appendChild(rttGraphDiv);
+            Plotly.newPlot(rttGraphDiv, graph.data, graph.layout, graph.config);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

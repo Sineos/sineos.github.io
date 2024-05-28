@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shutdown Data</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="logextract.js"></script>
+    <style>
+      body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      }
+      #header {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      background-color: #f1f1f1;
+      padding: 10px;
+      box-shadow: 0px 4px 2px -2px gray;
+      z-index: 1000;
+      }
+      #content {
+      margin-top: 120px; /* Adjust based on header height */
+      padding: 10px;
+      white-space: pre-wrap;
+      font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="header">
+      <h1>Shutdown Data</h1>
+      <select id="fileDropdown"></select>
+      <button id="downloadButton">Download</button>
+    </div>
+    <pre id="content"></pre>
+    <script>
+      const DB_INDEX = 'shutdown';
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const dbManager = new IndexedDBManager('LogDatabase', 1, () => {
+          populateDropdown(dbManager);
+        });
+      });
+
+      function populateDropdown(dbManager) {
+        dbManager.getAllKeys(DB_INDEX, (keys) => {
+          const dropdown = document.getElementById('fileDropdown');
+
+          keys.forEach((key) => {
+            const option = document.createElement('option');
+
+            option.value = key;
+            option.text = key;
+            dropdown.appendChild(option);
+          });
+
+          if (keys.length > 0) {
+            loadFileContent(dbManager, keys[0]);
+          }
+        });
+
+        document.getElementById('fileDropdown').addEventListener('change', (event) => {
+          loadFileContent(dbManager, event.target.value);
+        });
+
+        document.getElementById('downloadButton').addEventListener('click', () => {
+          const key = document.getElementById('fileDropdown').value;
+
+          downloadContent(dbManager, key);
+        });
+      }
+
+      function loadFileContent(dbManager, key) {
+        dbManager.get(DB_INDEX, key, (content) => {
+          document.getElementById('content').textContent = content;
+        });
+      }
+
+      function downloadContent(dbManager, key) {
+        dbManager.get(DB_INDEX, key, (content) => {
+          const blob = new Blob([content], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+
+          a.href = url;
+          a.download = key;
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+      }
+    </script>
+  </body>
+</html>

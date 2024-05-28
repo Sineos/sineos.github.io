@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Log File Analyzer</title>
+    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+    <script src="logextract.js"></script>
+    <script>
+      const dbManager = new IndexedDBManager('LogDatabase', 1);
+
+      function analyzeLogFile() {
+        const fileInput = document.getElementById('logFileInput');
+        const selectedFile = fileInput.files[0];
+
+        if (selectedFile) {
+          const filename = selectedFile.name;
+
+          dbManager.checkIfDatabaseExists((exists) => {
+            if (exists) {
+              dbManager.deleteAllStores((success, error) => {
+                if (success) {
+                  console.log('Stores deleted. Processing log file...');
+                  processLogFile(selectedFile, filename);
+                } else {
+                  console.error('Failed to delete stores:', error);
+                  alert('Error preparing database. Please try again later or clear your browser data.');
+                }
+              });
+            } else {
+              console.log('Database does not exist. Processing log file...');
+              processLogFile(selectedFile, filename);
+            }
+          });
+        }
+      }
+
+      window.addEventListener('beforeunload', (event) => {
+        dbManager.deleteAllStores((success, error) => {
+          if (success) {
+            console.log('Stores deleted. Trying to delete DB...');
+          } else {
+            console.error('Failed to delete stores:', error);
+          }
+        });
+        dbManager.closeConnection(); // Ensure the connection is closed before attempting to delete
+        dbManager.deleteDatabase((success) => {
+          if (success) {
+            console.log('Database deleted before closing the page.');
+          } else {
+            console.log('Failed to delete database before closing the page.');
+          }
+        });
+      });
+    </script>
+  </head>
+  <body>
+    <h1>Select Log File</h1>
+    <input type="file" id="logFileInput" />
+    <button onclick="analyzeLogFile()">Analyze</button>
+    <div id="analysisResults"></div>
+  </body>
+</html>
