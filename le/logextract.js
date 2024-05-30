@@ -410,11 +410,11 @@ class PlotData {
         };
 
 /*
-        // Create SmokePing-like RRT trace
-        const rrtTrace2 = {
+        // Create SmokePing-like RTT trace
+        const rttTrace2 = {
           x: matchingPairs.map((d) => d.actuallyReadTS),
           y: matchingPairs.map((d) => d.roundTripTime),
-          name: 'RRT',
+          name: 'RTT',
           fill: 'tozeroy',
           fillcolor: 'rgba(255, 0, 0, 0.2)',
           line: { color: 'transparent' },
@@ -423,8 +423,8 @@ class PlotData {
         };
 */
 
-        const rrtTrace = {
-          name: 'RRT',
+        const rttTrace = {
+          name: 'RTT',
           x: matchingPairs.map((d) => d.actuallyReadTS),
           y: matchingPairs.map((d) => d.roundTripTime),
           type: 'bar',
@@ -433,7 +433,7 @@ class PlotData {
 
         traces.push(sentTrace);
         traces.push(receiveTrace);
-        traces.push(rrtTrace);
+        traces.push(rttTrace);
       }
 
       if (unmatchedSent.length > 0) {
