@@ -43,14 +43,14 @@ class IndexedDBManager {
     };
   }
 
-    closeConnection() {
-        this.isClosing = true;
-        if (this.db) {
-            this.db.close();
-            this.db = null;
-            setTimeout(() => this.isClosing = false, 500);
-        }
+  closeConnection() {
+    this.isClosing = true;
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+      setTimeout(() => this.isClosing = false, 500);
     }
+  }
 
   save(storeName, key, data) {
     if (!this.db) {
@@ -107,6 +107,7 @@ class IndexedDBManager {
     const request = indexedDB.open(this.dbName);
 
     let existed = true;
+
     request.onupgradeneeded = () => {
       existed = false;
     };
@@ -138,40 +139,37 @@ class IndexedDBManager {
       callback(false);
     };
   }
-  
-    deleteAllStores(callback) {
-        if (!this.db) {
-            callback(false, "No active database connection");
-            return;
-        }
 
-        const transaction = this.db.transaction(this.db.objectStoreNames, 'readwrite');
-        const storeNames = Array.from(this.db.objectStoreNames);
+  deleteAllStores(callback) {
+    if (!this.db) {
+      callback(false, 'No active database connection');
 
-        let storesDeleted = 0;
-        storeNames.forEach(storeName => {
-            const store = transaction.objectStore(storeName);
-            const clearRequest = store.clear();
-
-            clearRequest.onsuccess = () => {
-                storesDeleted++;
-                if (storesDeleted === storeNames.length) {
-                    callback(true);
-                }
-            };
-
-            clearRequest.onerror = (event) => {
-                console.error(`Error clearing store '${storeName}':`, event.target.error);
-                callback(false, event.target.error);
-            };
-        });
+      return;
     }
+
+    const transaction = this.db.transaction(this.db.objectStoreNames, 'readwrite');
+    const storeNames = Array.from(this.db.objectStoreNames);
+
+    let storesDeleted = 0;
+
+    storeNames.forEach((storeName) => {
+      const store = transaction.objectStore(storeName);
+      const clearRequest = store.clear();
+
+      clearRequest.onsuccess = () => {
+        storesDeleted++;
+        if (storesDeleted === storeNames.length) {
+          callback(true);
+        }
+      };
+
+      clearRequest.onerror = (event) => {
+        console.error(`Error clearing store '${storeName}':`, event.target.error);
+        callback(false, event.target.error);
+      };
+    });
+  }
 }
-
-
-
-
-
 
 class DisplayManager {
   constructor() {
@@ -183,7 +181,7 @@ class DisplayManager {
 
   collectShutdown(filename, content) {
     this.shutdownData[filename] = content;
-    this.dbManager.save('shutdown', filename, content); 
+    this.dbManager.save('shutdown', filename, content);
   }
 
   collectConfig(filename, content) {
@@ -214,15 +212,19 @@ class DisplayManager {
 
 const sentRegex = /^(?:Sent|mcu\s'(\w+)': Sent) \d+ ([0-9.]+) ([0-9.]+) \d+: seq: (\w+\(\d+\)), (.+)$/;
 const receiveRegex = /^(?:Receive|mcu\s'(\w+)': Receive): \d+ ([0-9.]+) ([0-9.]+) \d+: seq: (\w+\(\d+\)), (.+)$/;
-const shutdownRegex = /static_string_id=([\w\s]+)/;
 const statsRegex = /^Stats ([0-9.]+): (.+)$/;
+const shutdownRegex1 = /^(?:Receive|mcu\s'(\w+)': Receive): \d+ ([0-9.]+) ([0-9.]+) \d+: seq: (\w+\(\d+\)), (.*?static_string_id=([\w\s]+))$/;
+const shutdownRegex2 = /^.*?(?:(?:.*MCU '([^']+)')|.*)\s\(eventtime=([0-9]*[.)?[0-9]+)\)$/;
+const shutdownRegex3 = /^Transition to shutdown state: (?:MCU '(?<mcu1>[^']+)'(?: shutdown: (?<reason1>.+))?|(?<reason2>.+? MCU '(?<mcu2>[^']+)'.*)|(?<reason3>.+))$/;
 
 class PlotData {
   constructor() {
     this.data = {
       MCUs: {},
-      Events: []
+      Events: [],
+      stats: []
     };
+    this.lastTimestamp = null; // to keep track of the last actuallyReadTS
   }
 
   parseLine(line) {
@@ -235,16 +237,20 @@ class PlotData {
     } else if ((match = statsRegex.exec(line))) {
       this.parseStatsLine(match);
     }
+
+    if ((match = shutdownRegex1.exec(line)) || (match = shutdownRegex2.exec(line)) || (match = shutdownRegex3.exec(line))) {
+      this.parseEventLine(line);
+    }
   }
 
   parseSentLine(match) {
     const mcu = match[1] || 'mcu';
     const expectedReceivedTS = parseFloat(match[2]);
     const actuallySentTS = parseFloat(match[3]);
-    const data = match[0].slice(0, 150);
+    const data = match[0].slice(0, 150) + ((match[0].length > 150) ? ' ...' : '');
 
     if (!this.data.MCUs[mcu]) {
-      this.data.MCUs[mcu] = { sent: [], receive: [] }; 
+      this.data.MCUs[mcu] = { sent: [], receive: [] };
     }
 
     this.data.MCUs[mcu].sent.push({
@@ -252,110 +258,94 @@ class PlotData {
       actuallySentTS,
       data
     });
+
+    this.lastTimestamp = actuallySentTS; // update the last timestamp
   }
 
   parseReceiveLine(match) {
     const mcu = match[1] || 'mcu';
     const actuallyReadTS = parseFloat(match[2]);
     const precedingSentTS = parseFloat(match[3]);
-    const data = match[0].slice(0, 150);
-    const shutdownMatch = data.match(shutdownRegex);
+    const data = match[0].slice(0, 150) + ((match[0].length > 150) ? ' ...' : '');
 
     if (!this.data.MCUs[mcu]) {
-      this.data.MCUs[mcu] = { sent: [], receive: [] }; 
+      this.data.MCUs[mcu] = { sent: [], receive: [] };
     }
 
-    const receiveData = {
+    this.data.MCUs[mcu].receive.push({
       actuallyReadTS,
       precedingSentTS,
       data
-    };
+    });
 
-    if (shutdownMatch) {
-      this.data.Events.push({
-        mcu,
-        actuallyReadTS,
-        precedingSentTS,
-        data,
-        shutdownEvent: shutdownMatch[1]
-      });
-    } else {
-      this.data.MCUs[mcu].receive.push(receiveData);
-    }
+    this.lastTimestamp = actuallyReadTS; // update the last timestamp
   }
 
   parseStatsLine(match) {
     const statsTS = parseFloat(match[1]);
-    const data = match[0].slice(0, 150);
-
-    if (!this.data.stats) {
-      this.data.stats = []; 
-    }
+    const data = match[0].slice(0, 150) + ((match[0].length > 150) ? ' ...' : '');
 
     this.data.stats.push({
       statsTS,
       data
     });
+
+    this.lastTimestamp = statsTS; // update the last timestamp
+  }
+
+  parseEventLine(line) {
+    let match;
+
+    if ((match = shutdownRegex1.exec(line))) {
+      const mcu = match[1] || 'mcu';
+      const actuallyReadTS = parseFloat(match[2]);
+      const precedingSentTS = parseFloat(match[3]);
+      const data = match[0].slice(0, 150) + ((match[0].length > 150) ? ' ...' : '');
+      const shutdownEvent = match[6];
+
+      this.data.Events.push({
+        mcu,
+        actuallyReadTS,
+        precedingSentTS,
+        data,
+        shutdownEvent
+      });
+    } else if ((match = shutdownRegex2.exec(line))) {
+      const mcu = match[1] || 'mcu';
+      const actuallyReadTS = parseFloat(match[2]);
+      const data = match[0].slice(0, 150) + ((match[0].length > 150) ? ' ...' : '');
+      const shutdownEvent = match[5];
+
+      this.data.Events.push({
+        mcu,
+        actuallyReadTS,
+        precedingSentTS,
+        data,
+        shutdownEvent
+      });
+    } else if ((match = shutdownRegex3.exec(line))) {
+      const mcu = match.groups.mcu1 || match.groups.mcu2 || 'all';
+      const shutdownEvent = match.groups.reason1 || match.groups.reason2 || match.groups.reason3;
+      const actuallyReadTS = this.lastTimestamp;
+      const data = line.slice(0, 150) + ((line.length > 150) ? ' ...' : '');
+
+
+      // Check for duplicates
+      const isDuplicate = this.data.Events.some((event) => event.shutdownEvent === shutdownEvent);
+
+      if (!isDuplicate) {
+        this.data.Events.push({
+          mcu,
+          actuallyReadTS,
+          data,
+          shutdownEvent
+        });
+      }
+    }
   }
 
   getParsedData() {
     return this.data;
-  }
-
-  generateGraphs() {
-    const graphs = [];
-
-    for (const mcu in this.data.MCUs) {
-      const mcuData = this.data.MCUs[mcu];
-
-      const sentTrace = {
-        x: mcuData.sent.map((d) => d.expectedReceivedTS),
-        y: Array(mcuData.sent.length).fill(1),
-        mode: 'markers',
-        name: 'Sent',
-        text: mcuData.sent.map((d) => d.data),
-        hoverinfo: 'x+text'
-      };
-
-      const receiveTrace = {
-        x: mcuData.receive.map((d) => d.actuallyReadTS),
-        y: Array(mcuData.receive.length).fill(1),
-        mode: 'markers',
-        name: 'Receive',
-        text: mcuData.receive.map((d) => d.data),
-        hoverinfo: 'x+text'
-      };
-
-      const statsTrace = {
-        x: this.data.stats.map((d) => d.statsTS),
-        y: Array(this.data.stats.length).fill(1),
-        mode: 'markers',
-        name: 'Stats',
-        text: this.data.stats.map((d) => d.data),
-        hoverinfo: 'x+text'
-      };
-
-      const layout = {
-        title: `MCU ${mcu}`,
-        xaxis: { title: 'Timestamp' },
-        yaxis: { title: 'Events', tickvals: [1], ticktext: ['Event'] },
-        annotations: this.data.Events.filter((event) => event.mcu === mcu).map((event) => ({
-          x: event.actuallyReadTS,
-          y: 1,
-          text: event.shutdownEvent,
-          showarrow: true,
-          arrowhead: 7,
-          ax: 0,
-          ay: -40
-        }))
-      };
-
-      const config = { responsive: true };
-
-      graphs.push({ data: [sentTrace, receiveTrace, statsTrace], layout, config });
-    }
-    
-    return graphs;
   }
 
   generateRTTGraphs() {
@@ -394,81 +384,127 @@ class PlotData {
         }
       });
 
-      const sentTrace = {
-        x: matchingPairs.map((d) => d.expectedReceivedTS),
-        y: Array(matchingPairs.length).fill(1),
-        mode: 'markers',
-        name: 'Sent',
-        text: matchingPairs.map((d) => d.dataSent),
-        hoverinfo: 'x+text',
-        marker: { color: 'blue' }
-      };
+      const traces = [];
 
-      const receiveTrace = {
-        x: matchingPairs.map((d) => d.actuallyReadTS),
-        y: Array(matchingPairs.length).fill(1),
-        mode: 'markers',
-        name: 'Receive',
-        error_y: {
-          type: 'data',
-          symmetric: false,
-          array: matchingPairs.map((d) => d.roundTripTime),
-          arrayminus: matchingPairs.map(() => 0)
-        },
-        text: matchingPairs.map((d) => `RTT: ${d.roundTripTime}<br>Received: ${d.dataReceived}<br>Answer to: ${d.dataSent}`),
-        hoverinfo: 'x+text',
-        marker: { color: 'red' }
-      };
+      if (matchingPairs.length > 0) {
+        const sentTrace = {
+          name: 'Sent',
+          x: matchingPairs.map((d) => d.expectedReceivedTS),
+          y: Array(matchingPairs.length).fill(0),
+          mode: 'markers',
+          marker: { color: 'blue' },
+          text: matchingPairs.map((d) => d.dataSent),
+          hoverinfo: 'x+text'
 
-      const unmatchedSentTrace = {
-        x: unmatchedSent.map((d) => d.expectedReceivedTS),
-        y: Array(unmatchedSent.length).fill(1),
-        mode: 'markers',
-        name: 'Unmatched Sent',
-        text: unmatchedSent.map((d) => d.data),
-        hoverinfo: 'x+text',
-        marker: { color: 'lightblue' }
-      };
+        };
 
-      const unmatchedReceiveTrace = {
-        x: unmatchedReceive.map((d) => d.actuallyReadTS),
-        y: Array(unmatchedReceive.length).fill(1),
-        mode: 'markers',
-        name: 'Unmatched Receive',
-        text: unmatchedReceive.map((d) => d.data),
-        hoverinfo: 'x+text',
-        marker: { color: 'lightcoral' }
-      };
+        const receiveTrace = {
+          name: 'Receive',
+          x: matchingPairs.map((d) => d.actuallyReadTS),
+          y: Array(matchingPairs.length).fill(0),
+          mode: 'markers',
+          marker: { color: 'red' },
+          text: matchingPairs.map((d) => `RTT: ${d.roundTripTime}<br>Received: ${d.dataReceived}<br>Answer to: ${d.dataSent}`),
+          hoverinfo: 'x+text'
 
-      const statsTrace = {
-        x: this.data.stats.map((d) => d.statsTS),
-        y: Array(this.data.stats.length).fill(1),
-        mode: 'markers',
-        name: 'Stats',
-        text: this.data.stats.map((d) => d.data),
-        hoverinfo: 'x+text'
-      };
+        };
+
+/*
+        // Create SmokePing-like RRT trace
+        const rrtTrace2 = {
+          x: matchingPairs.map((d) => d.actuallyReadTS),
+          y: matchingPairs.map((d) => d.roundTripTime),
+          name: 'RRT',
+          fill: 'tozeroy',
+          fillcolor: 'rgba(255, 0, 0, 0.2)',
+          line: { color: 'transparent' },
+          // showlegend: false,
+          type: 'scatter'
+        };
+*/
+
+        const rrtTrace = {
+          name: 'RRT',
+          x: matchingPairs.map((d) => d.actuallyReadTS),
+          y: matchingPairs.map((d) => d.roundTripTime),
+          type: 'bar',
+          marker: { color: 'LightPink' }
+        };
+
+        traces.push(sentTrace);
+        traces.push(receiveTrace);
+        traces.push(rrtTrace);
+      }
+
+      if (unmatchedSent.length > 0) {
+        const unmatchedSentTrace = {
+          name: 'Unmatched Sent',
+          x: unmatchedSent.map((d) => d.expectedReceivedTS),
+          y: Array(unmatchedSent.length).fill(0),
+          mode: 'markers',
+          marker: { color: 'LightSkyBlue' },
+
+          text: unmatchedSent.map((d) => d.data),
+          hoverinfo: 'x+text'
+        };
+
+        traces.push(unmatchedSentTrace);
+      }
+
+      if (unmatchedReceive.length > 0) {
+        const unmatchedReceiveTrace = {
+          x: unmatchedReceive.map((d) => d.actuallyReadTS),
+          y: Array(unmatchedReceive.length).fill(0),
+          mode: 'markers',
+          marker: { color: 'purple' },
+          name: 'Unmatched Receive',
+          text: unmatchedReceive.map((d) => d.data),
+          hoverinfo: 'x+text'
+
+        };
+
+        traces.push(unmatchedReceiveTrace);
+      }
+
+      if (this.data.stats && this.data.stats.length > 0) {
+        const statsTrace = {
+          name: 'Stats',
+          x: this.data.stats.map((d) => d.statsTS),
+          y: Array(this.data.stats.length).fill(0),
+          mode: 'markers',
+          marker: { color: 'green' },
+
+          text: this.data.stats.map((d) => d.data),
+          hoverinfo: 'x+text'
+        };
+
+        traces.push(statsTrace);
+      }
 
       const layout = {
-        title: `RTT for MCU ${mcu}`,
+        title: `RTT MCU ${mcu}`,
         xaxis: { title: 'Timestamp' },
-        yaxis: { title: 'Events', tickvals: [1], ticktext: ['Event'] },
-        annotations: this.data.Events.filter((event) => event.mcu === mcu).map((event) => ({
-          x: event.actuallyReadTS,
-          y: 1,
-          text: event.shutdownEvent,
-          showarrow: true,
-          arrowhead: 7,
-          ax: 0,
-          ay: -40
-        }))
+        // yaxis: { title: 'Events', tickvals: [0], ticktext: ['Event'] },
+        annotations: this.data.Events
+          .filter((event) => event.mcu === mcu || event.mcu === 'all')
+          .map((event, index) => ({
+            x: event.actuallyReadTS,
+            y: 0,
+            text: event.shutdownEvent,
+            showarrow: true,
+            arrowhead: 7,
+            ax: (index % 2 === 0) ? 40 : -40,
+            ay: (index % 2 === 0) ? -40 : 40
+          }))
       };
 
       const config = { responsive: true };
 
-      rttGraphs.push({ data: [sentTrace, receiveTrace, unmatchedSentTrace, unmatchedReceiveTrace, statsTrace], layout, config });
+      if (traces.length > 0) {
+        rttGraphs.push({ data: traces, layout, config });
+      }
     }
-    
+
     return rttGraphs;
   }
 }
@@ -590,9 +626,7 @@ class TMCUartHelper {
     msgTemp[1] = addr;
     msgTemp[2] = reg;
     msgTemp.set(new Uint8Array([(val >> 24) & 0xff, (val >> 16) & 0xff, (val >> 8) & 0xff, val & 0xff]), 3);
-
     crc.push(this._calc_crc8(msgTemp)); // Calculate CRC and push it to the crc array
-
     msg.set(msgTemp, 0); // Copy the message bytes to the msg array
     msg.set(crc, 7); // Set the CRC byte at the end of the msg array
 
@@ -826,7 +860,6 @@ class MCUStream {
 
   trans_clock(clock, ts) {
     const [sample_time, sample_clock, freq] = this.clock_est;
-
     const exp_clock = parseInt(sample_clock + ((ts - sample_time) * freq), 10);
     const ext_clock = add_high_bits(clock, exp_clock, 0xffffffff);
 
@@ -962,10 +995,7 @@ class StepperStream {
       const clock = parseInt(m.groups.clock, 10);
       const [sample_time, sample_clock, freq] = this.clock_est;
       const ts = sample_time + ((clock - sample_clock) / freq);
-
-
       const parts = splitWithRest(line, ' ', 4);
-
 
       parts[0] = `${this.name} queue_step`;
       parts[2] += `(${ts.toFixed(6)})`;
@@ -1120,7 +1150,7 @@ class GCodeStream {
       const gcode = m.groups.gcode.slice(1, -1).replace(/\\n/g, '');
 
       this.gcode_commands.push(gcode);
-      
+
       return [true, null];
     }
 
@@ -1131,14 +1161,13 @@ class GCodeStream {
     if (this.gcode_stream.length > 0) {
       const data = this.gcode_commands.join('\n');
       const gcodeContent = this.gcode_state + '\n' + data;
-	  
+
       displayManager.collectGcode(this.gcode_filename, gcodeContent);
     }
 
     return this.gcode_stream;
   }
 }
-
 
 const api_cmd_r = new RegExp('^Received ' + time_s + ': \\{.*\\}$');
 
@@ -1217,16 +1246,13 @@ class StatsStream {
 
     for (const [mcu_name, mcu2] of Object.entries(this.mcus)) {
       const sname = `${mcu_name}:send_seq`;
-
       const rname = `${mcu_name}:receive_seq`;
-
 
       if (!(sname in keyparts)) {
         continue;
       }
 
       const sseq = parseInt(keyparts[sname], 10);
-
       const rseq = parseInt(keyparts[rname], 10);
 
       min_ts = Math.max(min_ts, mcu.sent_seq_to_time.get(sseq - 1, 0), mcu.receive_seq_to_time.get(rseq, 0));
@@ -1257,11 +1283,8 @@ class StatsStream {
 
     if (mcu_r.test(line)) {
       const match = line.match(mcu_r);
-
       const mcu_name = match.groups.mcu;
-
       const mcu_stream = new MCUStream(mcu_name);
-
 
       this.mcus[mcu_name] = mcu_stream;
 
@@ -1271,10 +1294,7 @@ class StatsStream {
       const match = line.match(stepper_r);
       const name = match.groups.name;
       const mcu = match.groups.mcu;
-
-
       const stepper_stream = new StepperStream(name, mcu, this.mcus);
-
 
       return [true, stepper_stream];
     }
@@ -1300,7 +1320,6 @@ class StatsStream {
       const match = line.match(api_r);
       const client = match.groups.client;
       const api_stream = new APIStream(client);
-
 
       return [true, api_stream];
     }
@@ -1348,7 +1367,6 @@ class StatsStream {
     return this.stats_stream;
   }
 }
-
 
 class GatherShutdown {
   constructor(configs, line_num, recent_lines, logname) {
@@ -1442,7 +1460,7 @@ class GatherShutdown {
       ...out.map((i) => i[2])
     ];
     const content = lines.join('\n');
-	
+
     displayManager.collectShutdown(this.filename, content);
   }
 }

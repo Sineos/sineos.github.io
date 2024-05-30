@@ -20,7 +20,7 @@
       box-shadow: 0px 4px 2px -2px gray;
       z-index: 1000;
       }
-      #graphs, #rtt-graphs {
+      #rtt-graphs {
       margin-top: 120px; /* Adjust based on header height */
       padding: 10px;
       }
@@ -31,7 +31,6 @@
       <h1>Plot Data</h1>
       <select id="fileDropdown"></select>
     </div>
-    <div id="graphs"></div>
     <div id="rtt-graphs"></div>
     <script>
       document.addEventListener('DOMContentLoaded', () => {
@@ -69,23 +68,11 @@
           const plotData = new PlotData();
 
           content.split('\n').forEach((line) => plotData.parseLine(line));
-          const graphs = plotData.generateGraphs();
           const rttGraph = plotData.generateRTTGraphs(); // Generate RTT graph
-
-          const graphsDiv = document.getElementById('graphs');
-
-          graphsDiv.innerHTML = ''; // Clear previous graphs
 
           const rttGraphsDiv = document.getElementById('rtt-graphs');
 
           rttGraphsDiv.innerHTML = ''; // Clear previous RTT graphs
-
-          graphs.forEach((graph) => {
-            const graphDiv = document.createElement('div');
-
-            graphsDiv.appendChild(graphDiv);
-            Plotly.newPlot(graphDiv, graph.data, graph.layout, graph.config);
-          });
 
           rttGraph.forEach((graph) => {
             const rttGraphDiv = document.createElement('div');
