@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Config Data</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <script src="logextract.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://en.wikipedia.org/w/index.php?title=User:Cacycle/diff.js&action=raw&ctype=text/javascript"></script>
     <style>
       body {
       margin: 0;
@@ -20,22 +21,116 @@
       box-shadow: 0px 4px 2px -2px gray;
       z-index: 1000;
       }
+      #header h1 {
+      margin: 0;
+      width: 100%;
+      }
+      #header > div {
+      display: inline-block;
+      vertical-align: middle;
+      }
+      #header > div:first-child {
+      float: left;
+      }
+      #header > div:last-child {
+      float: right;
+      margin-right: 10px;
+      padding-right: 10px
+      }
+      h1 {
+      margin: 0;
+      }
       #content {
-      margin-top: 120px; /* Adjust based on header height */
+      margin-top: 120px;
       padding: 10px;
-      white-space: pre-wrap;
+      display: flex;
+      gap: 10px;
+      white-space: pre;
       font-family: monospace;
+      }
+      /* Default textarea height when only content1 is shown */
+      #content1, #content2 {
+      height: auto;
+      min-height: 300px;
+      max-height: 80vh;
+      resize: vertical;
+      }
+      /* Reduced textarea height when diffContent is shown */
+      #diffSection:not([style*="display: none"]) #content1,
+      #diffSection:not([style*="display: none"]) #content2 {
+      height: 300px;
+      max-height: 300px;
+      }
+      #content textarea {
+      width: 100%;
+      height: 400px;
+      resize: none;
+      overflow: auto;
+      }
+      #content1, #content2, #diffContent {
+      width: 100%;
+      min-height: 300px;
+      resize: vertical;
+      overflow: auto;
+      border: 1px solid #ccc;
+      padding: 10px;
+      font-family: monospace;
+      white-space: pre;
+      background-color: #f0f0f0;
+      }
+      #content textarea {
+      max-height: 80vh;
+      }
+      /* Specific styles for textareas when diffContent is visible */
+      #diffSection:not([style*="display: none"]) #content1,
+      #diffSection:not([style*="display: none"]) #content2 {
+      height: 300px;
+      max-height: 300px;
       }
     </style>
   </head>
   <body>
     <div id="header">
       <h1>Config Data</h1>
-      <select id="fileDropdown"></select>
-      <button id="downloadButton">Download</button>
+      <div>
+        <select id="fileDropdown"></select>
+        <button id="downloadButton">Download</button>
+      </div>
+      <div>
+        Select to diff:
+        <select id="compareDropdown">
+          <option value="none">None</option>
+        </select>
+        <button id="clearDiffButton" style="display:none;">Clear</button>
+      </div>
     </div>
-    <pre id="content"></pre>
+    <div id="content">
+      <textarea id="content1" readonly></textarea>
+      <textarea id="content2" readonly style="display:none;"></textarea>
+    </div>
+    <div id="diffSection" style="display:none;">
+      <h2>Diff of <span id="file1Name"></span> to <span id="file2Name"></span></h2>
+      <div id="diffContent"></div>
+    </div>
     <script>
+      const DiffConfig = {
+        fullDiff: false, // Show complete un-clipped diff text (false)
+        showBlockMoves: true, // Enable block move layout with highlighted blocks and marks at the original positions (true)
+        charDiff: false, // Enable character-refined diff (true)
+        repeatedDiff: true, // Enable repeated diff to resolve problematic sequences (true)
+        recursiveDiff: true, // Enable recursive diff to resolve problematic sequences (true)
+        recursionMax: 10, // Maximum recursion depth (10)
+        unlinkBlocks: false, // Reject blocks if they are too short and their words are not unique, prevents fragmentated diffs for very different versions (true)
+        unlinkMax: 5, // Maximum number of rejection cycles (5)
+        blockMinLength: 1, // Reject blocks if shorter than this number of real words (3)
+        coloredBlocks: false, // Display blocks in differing colors (rainbow color scheme) (false)
+        noUnicodeSymbols: false, // Do not use UniCode block move marks (legacy browsers) (false)
+        stripTrailingNewline: true, // Strip trailing newline off of texts (true in .js, false in .php)
+        debug: false, // Show debug infos and stats (block, group, and fragment data) in debug console (false)
+        timer: false, // Show timing results in debug console (false)
+        unitTesting: false // Run unit tests to prove correct working, display results in debug console (false)
+      };
+
       const DB_INDEX = 'config';
 
       document.addEventListener('DOMContentLoaded', () => {
@@ -44,25 +139,47 @@
         });
       });
 
+      function resizeTextArea(element) {
+        element.style.height = '1px';
+        element.style.height = (25 + element.scrollHeight) + 'px';
+      }
+
       function populateDropdown(dbManager) {
         dbManager.getAllKeys(DB_INDEX, (keys) => {
-          const dropdown = document.getElementById('fileDropdown');
+          const fileDropdown = document.getElementById('fileDropdown');
+          const compareDropdown = document.getElementById('compareDropdown');
 
           keys.forEach((key) => {
             const option = document.createElement('option');
 
             option.value = key;
             option.text = key;
-            dropdown.appendChild(option);
+            fileDropdown.appendChild(option);
+            const compareOption = option.cloneNode(true);
+
+            compareDropdown.appendChild(compareOption);
           });
 
           if (keys.length > 0) {
-            loadFileContent(dbManager, keys[0]);
+            resetDiff();
+            loadFileContent(dbManager, keys[0], 'content1');
           }
         });
 
         document.getElementById('fileDropdown').addEventListener('change', (event) => {
-          loadFileContent(dbManager, event.target.value);
+          loadFileContent(dbManager, event.target.value, 'content1');
+          // resizeTextArea(content1);
+          resetDiff();
+        });
+
+        document.getElementById('compareDropdown').addEventListener('change', (event) => {
+          const selectedValue = event.target.value;
+
+          if (selectedValue === 'none') {
+            resetDiff();
+          } else {
+            loadFileContent(dbManager, selectedValue, 'content2', performDiff);
+          }
         });
 
         document.getElementById('downloadButton').addEventListener('click', () => {
@@ -70,11 +187,19 @@
 
           downloadContent(dbManager, key);
         });
+
+        document.getElementById('clearDiffButton').addEventListener('click', () => {
+          resetDiff();
+        });
       }
 
-      function loadFileContent(dbManager, key) {
+      function loadFileContent(dbManager, key, contentId, callback) {
         dbManager.get(DB_INDEX, key, (content) => {
-          document.getElementById('content').textContent = content;
+          document.getElementById(contentId).textContent = content;
+          resizeTextArea(content1);
+          if (callback) {
+            callback();
+          }
         });
       }
 
@@ -89,6 +214,47 @@
           a.click();
           URL.revokeObjectURL(url);
         });
+      }
+
+      function adjustContentHeight() {
+        const diffSection = document.getElementById('diffSection');
+        const content1 = document.getElementById('content1');
+        const content2 = document.getElementById('content2');
+
+        if (diffSection.style.display !== 'none') {
+          // If diff is shown, set both to 300px
+          content1.style.height = '300px';
+          content2.style.height = '300px';
+        } else {
+          resizeTextArea(content1);
+        }
+      }
+
+      function resetDiff() {
+        document.getElementById('compareDropdown').value = 'none';
+        document.getElementById('content2').style.display = 'none';
+        document.getElementById('diffSection').style.display = 'none';
+        document.getElementById('clearDiffButton').style.display = 'none';
+        adjustContentHeight();
+      }
+
+      function performDiff() {
+        const content1 = document.getElementById('content1').value;
+        const content2 = document.getElementById('content2').value;
+        const wikEdDiff = new WikEdDiff();
+
+        for (const key in DiffConfig) {
+          wikEdDiff.config[key] = DiffConfig[key];
+        }
+        const diffHtml = wikEdDiff.diff(content1, content2);
+
+        document.getElementById('diffContent').innerHTML = diffHtml;
+        document.getElementById('file1Name').textContent = document.getElementById('fileDropdown').value;
+        document.getElementById('file2Name').textContent = document.getElementById('compareDropdown').value;
+        document.getElementById('content2').style.display = 'block';
+        document.getElementById('diffSection').style.display = 'block';
+        document.getElementById('clearDiffButton').style.display = 'block';
+        adjustContentHeight();
       }
     </script>
   </body>
