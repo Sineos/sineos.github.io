@@ -24,6 +24,8 @@
       </p>
       <p>Just browse for the <code>klippy.log</code> using the button below and press "Process Log".
       </p>
+      <p>Note that processing large files can take some seconds and the browser may feel less responsive.
+      </p>
     </div>
     <div>
       <input type="file" id="fileInput">
@@ -34,26 +36,34 @@
     <script>
       document.getElementById('buttonProcess').addEventListener('click', () => {
         const fileInput = document.getElementById('fileInput');
-
+      
         if (fileInput.files.length > 0) {
           const file = fileInput.files[0];
           const reader = new FileReader();
-
+      
           reader.onload = function(event) {
+            deleteDatabaseOrStore(DB_NAME, DB_STORE_NAME, (error) => {
+              if (error) {
+                console.error('Error during deletion:', error);
+              } else {
+                console.log('Deletion process completed successfully.');
+              }
+            });
             const logData = event.target.result;
             const parsedData = parseLog(logData);
-
+      
             openDb((db) => {
               addParsedLogData(db, parsedData, () => {
                 window.location.href = 'graphs.html';
+                // window.open('graphs.html', '_blank');
               });
             });
           };
-
+      
           reader.onerror = function(event) {
             console.error('Error reading file:', event.target.error);
           };
-
+      
           reader.readAsText(file);
         } else {
           alert('Please select a log file');

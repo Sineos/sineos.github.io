@@ -26,12 +26,12 @@
       <div id="plotDiv5"></div>
     </div>
     <script>
-      const HREF = 'index2.html';
-
+      const HREF = 'index.html';
+      
       document.getElementById('backButton').addEventListener('click', () => {
         window.location.href = HREF;
       });
-
+      
       openDb((db) => {
         getParsedLogData(db, (parsedData) => {
           if (!parsedData) {
@@ -39,14 +39,14 @@
           }
           const sessionSelect = document.getElementById('sessionSelect');
           const sessions = Object.keys(parsedData);
-
+      
           // Session Option Generation
           sessionSelect.innerHTML = '<option value="all">All Sessions</option>';
           sessions.forEach((key, index) => {
             const timeStamp = new Date(Number(key) * 1000).toLocaleString();
             const dataPoints = parsedData[key].datapoints.length;
             const option = document.createElement('option');
-
+      
             option.value = key;
             option.text = `Session ${index + 1}: ${timeStamp} (${dataPoints} data points)`;
             if (dataPoints === 0) {
@@ -54,13 +54,13 @@
             }
             sessionSelect.appendChild(option);
           });
-
+      
           sessionSelect.addEventListener('change', () => {
             const selectedSession = sessionSelect.value;
-
+      
             // Clear previous plots
             [...document.querySelectorAll('#graphs > div')].forEach((div) => div.innerHTML = '');
-
+      
             // Plotting functions
             if (selectedSession === 'all') {
               plotMCU(parsedData, MAXBANDWIDTH, 'all');
@@ -72,7 +72,7 @@
               const sessionData = {
                 [selectedSession]: parsedData[selectedSession]
               };
-
+      
               plotMCU(sessionData, MAXBANDWIDTH, selectedSession);
               plotSystem(sessionData, selectedSession);
               plotMCUFrequencies(sessionData, selectedSession);
@@ -82,10 +82,10 @@
               alert(`Error: Session ${selectedSession} not found.`);
             }
           });
-
+      
           // Initial plot call
           const initialSession = sessionSelect.value || 'all';
-
+      
           plotMCU(parsedData, MAXBANDWIDTH, initialSession);
           plotSystem(parsedData, initialSession);
           plotMCUFrequencies(parsedData, initialSession);
@@ -93,27 +93,15 @@
           plotAdvancedData(parsedData, initialSession);
         });
       });
-
+      
       window.addEventListener('beforeunload', () => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-        request.onsuccess = function() {
-          const db = request.result;
-          const transaction = db.transaction(DB_STORE_NAME, 'readwrite');
-          const logStore = transaction.objectStore(DB_STORE_NAME);
-
-          logStore.clear().onsuccess = function() {
-            console.log('IndexedDB store cleared on window unload');
-          };
-
-          logStore.clear().onerror = function(event) {
-            console.error('Error clearing IndexedDB store:', event.target.error);
-          };
-        };
-
-        request.onerror = function(event) {
-          console.error('Error opening IndexedDB for clearing:', event.target.error);
-        };
+        deleteDatabaseOrStore(DB_NAME, DB_STORE_NAME, (error) => {
+          if (error) {
+            console.error('Error during deletion:', error);
+          } else {
+            console.log('Deletion process completed successfully.');
+          }
+        });
       });
     </script>
   </body>

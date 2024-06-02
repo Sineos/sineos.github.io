@@ -44,18 +44,68 @@ function openDb(callback) {
 // -----------------------------------------------------------------------------------------------
 
 function addParsedLogData(db, parsedData, callback) {
-  const transaction = db.transaction([DB_STORE_NAME], 'readwrite');
-  const store = transaction.objectStore(DB_STORE_NAME);
-  const request = store.put({ id: 'parsedLogData', content: parsedData });
+  const timestamps = Object.keys(parsedData);
+  let currentIndex = 0;
 
-  request.onsuccess = function() {
-    callback();
-  };
+  function putNextTimestamp() {
+    if (currentIndex >= timestamps.length) {
+      callback();
 
-  request.onerror = function(event) {
-    console.error('Error storing parsed log data:', event.target.error);
-  };
+      return;
+    }
+
+    const key = timestamps[currentIndex];
+    const entry = parsedData[key];
+    const CHUNK_SIZE = 10000;
+    let index = 0;
+
+    function putNextChunk() {
+      if (index >= entry.datapoints.length) {
+        currentIndex++;
+        putNextTimestamp();
+
+        return;
+      }
+
+      const chunkTransaction = db.transaction([DB_STORE_NAME], 'readwrite');
+      const chunkStore = chunkTransaction.objectStore(DB_STORE_NAME);
+
+      chunkTransaction.oncomplete = function() {
+        //console.log(`Chunk for ${entry.baseTimeStamp} stored successfully.`);
+        index += CHUNK_SIZE;
+        putNextChunk();
+      };
+
+      chunkTransaction.onerror = function(event) {
+        console.error('Chunk transaction error:', event.target.error);
+        index += CHUNK_SIZE; // Skip the chunk that failed and move to the next
+        putNextChunk();
+      };
+
+      const request = chunkStore.put({
+        id: entry.baseTimeStamp,
+        baseTimeStamp: entry.baseTimeStamp,
+        events: entry.events,
+        datapoints: entry.datapoints.slice(0, index + CHUNK_SIZE)
+      });
+
+      request.onsuccess = function() {
+        // Successfully stored the item
+      };
+
+      request.onerror = function(event) {
+        console.error('Error storing entry:', event.target.error);
+      };
+    }
+
+    // Start storing chunks for the current entry
+    putNextChunk();
+  }
+
+  // Start the process with the first timestamp entry
+  putNextTimestamp();
 }
+
 
 // -----------------------------------------------------------------------------------------------
 // Get data from browser's IndexDB
@@ -64,14 +114,101 @@ function addParsedLogData(db, parsedData, callback) {
 function getParsedLogData(db, callback) {
   const transaction = db.transaction([DB_STORE_NAME], 'readonly');
   const store = transaction.objectStore(DB_STORE_NAME);
-  const request = store.get('parsedLogData');
+  const request = store.getAll();
 
   request.onsuccess = function(event) {
-    callback(event.target.result.content);
+    const allData = event.target.result;
+    const parsedData = {};
+
+    allData.forEach((entry) => {
+      const baseTimeStamp = entry.baseTimeStamp;
+
+      if (!parsedData[baseTimeStamp]) {
+        parsedData[baseTimeStamp] = {
+          baseTimeStamp,
+          events: entry.events,
+          datapoints: []
+        };
+      }
+      parsedData[baseTimeStamp].datapoints.push(...entry.datapoints);
+    });
+
+    callback(parsedData);
   };
 
   request.onerror = function(event) {
     console.error('Error retrieving parsed log data:', event.target.error);
+  };
+}
+
+// -----------------------------------------------------------------------------------------------
+// Delete IndexDB respectively its stores
+// -----------------------------------------------------------------------------------------------
+
+function deleteDatabaseOrStore(callback) {
+  // Ensure callback is a function
+  if (typeof callback !== 'function') {
+    callback = function() {};
+  }
+
+  // First, attempt to delete the entire database
+  const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
+
+  deleteRequest.onsuccess = function() {
+    console.log(`Database ${DB_NAME} deleted successfully.`);
+    callback(null);
+  };
+
+  deleteRequest.onerror = function(event) {
+    console.error(`Failed to delete database ${DB_NAME}:`, event.target.error);
+
+    // If database deletion fails, attempt to delete the store instead
+    const openRequest = indexedDB.open(DB_NAME);
+
+    openRequest.onsuccess = function(event) {
+      const db = event.target.result;
+
+      if (db.objectStoreNames.contains(DB_STORE_NAME)) {
+        const versionRequest = db.setVersion ? db.setVersion(db.version + 1) : db.close();
+
+        if (versionRequest) {
+          versionRequest.onsuccess = function() {
+            const versionTransaction = db.transaction([DB_STORE_NAME], 'readwrite');
+
+            db.deleteObjectStore(DB_STORE_NAME);
+
+            versionTransaction.oncomplete = function() {
+              console.log(`Object store ${DB_STORE_NAME} deleted successfully.`);
+              callback(null);
+            };
+
+            versionTransaction.onerror = function(event) {
+              console.error(`Failed to delete object store ${DB_STORE_NAME}:`, event.target.error);
+              callback(event.target.error);
+            };
+          };
+
+          versionRequest.onerror = function(event) {
+            console.error(`Failed to change version for deleting store ${DB_STORE_NAME}:`, event.target.error);
+            callback(event.target.error);
+          };
+        } else {
+          callback(`Unable to delete store ${DB_STORE_NAME} due to incompatible browser.`);
+        }
+      } else {
+        console.log(`Object store ${DB_STORE_NAME} does not exist.`);
+        callback(null);
+      }
+    };
+
+    openRequest.onerror = function(event) {
+      console.error(`Failed to open database ${DB_NAME}:`, event.target.error);
+      callback(event.target.error);
+    };
+  };
+
+  deleteRequest.onblocked = function() {
+    console.warn(`Database deletion is blocked.`);
   };
 }
 
@@ -159,7 +296,7 @@ function parseLog(logData) {
       let virtualBaseTimeStamp = (baseTimeStamp - lastSkipped + firstSkipped).toFixed(1);
 
       // Adjust virtualBaseTimeStamp by subtracting 1 second to avoid overwriting
-	  // timestamps at the "border
+      // timestamps at the "border
       virtualBaseTimeStamp -= 1;
 
       const virtualStartMessage = `Virtual Start (${new Date(virtualBaseTimeStamp * 1000).toLocaleString()})`;
