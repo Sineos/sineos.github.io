@@ -353,119 +353,40 @@ class PlotData {
 
     for (const mcu in this.data.MCUs) {
       const mcuData = this.data.MCUs[mcu];
-      const matchingPairs = [];
-      const unmatchedSent = [...mcuData.sent];
-      const unmatchedReceive = [...mcuData.receive];
-
-      mcuData.receive.forEach((receiveData) => {
-        const sentData = mcuData.sent.find((sent) => sent.expectedReceivedTS === receiveData.precedingSentTS);
-
-        if (sentData) {
-          const roundTripTime = receiveData.actuallyReadTS - sentData.actuallySentTS;
-
-          matchingPairs.push({
-            expectedReceivedTS: sentData.expectedReceivedTS,
-            actuallyReadTS: receiveData.actuallyReadTS,
-            roundTripTime,
-            dataSent: sentData.data,
-            dataReceived: receiveData.data
-          });
-          // Remove matched sentData and receiveData from unmatched arrays
-          const sentIndex = unmatchedSent.indexOf(sentData);
-
-          if (sentIndex > -1) {
-            unmatchedSent.splice(sentIndex, 1);
-          }
-          const receiveIndex = unmatchedReceive.indexOf(receiveData);
-
-          if (receiveIndex > -1) {
-            unmatchedReceive.splice(receiveIndex, 1);
-          }
-        }
-      });
 
       const traces = [];
 
-      if (matchingPairs.length > 0) {
+      // Sent trace
+      if (mcuData.sent.length > 0) {
         const sentTrace = {
           name: 'Sent',
-          x: matchingPairs.map((d) => d.expectedReceivedTS),
-          y: Array(matchingPairs.length).fill(0),
+          x: mcuData.sent.map((d) => d.expectedReceivedTS),
+          y: Array(mcuData.sent.length).fill(0),
           mode: 'markers',
           marker: { color: 'blue' },
-          text: matchingPairs.map((d) => d.dataSent),
+          text: mcuData.sent.map((d) => d.data),
           hoverinfo: 'x+text'
-
-        };
-
-        const receiveTrace = {
-          name: 'Receive',
-          x: matchingPairs.map((d) => d.actuallyReadTS),
-          y: Array(matchingPairs.length).fill(0),
-          mode: 'markers',
-          marker: { color: 'red' },
-          text: matchingPairs.map((d) => `RTT: ${d.roundTripTime}<br>Received: ${d.dataReceived}<br>Answer to: ${d.dataSent}`),
-          hoverinfo: 'x+text'
-
-        };
-
-/*
-        // Create SmokePing-like RTT trace
-        const rttTrace2 = {
-          x: matchingPairs.map((d) => d.actuallyReadTS),
-          y: matchingPairs.map((d) => d.roundTripTime),
-          name: 'RTT',
-          fill: 'tozeroy',
-          fillcolor: 'rgba(255, 0, 0, 0.2)',
-          line: { color: 'transparent' },
-          // showlegend: false,
-          type: 'scatter'
-        };
-*/
-
-        const rttTrace = {
-          name: 'RTT',
-          x: matchingPairs.map((d) => d.actuallyReadTS),
-          y: matchingPairs.map((d) => d.roundTripTime),
-          type: 'bar',
-          marker: { color: 'LightPink' }
         };
 
         traces.push(sentTrace);
+      }
+
+      // Receive trace
+      if (mcuData.receive.length > 0) {
+        const receiveTrace = {
+          name: 'Receive',
+          x: mcuData.receive.map((d) => d.actuallyReadTS),
+          y: Array(mcuData.receive.length).fill(0),
+          mode: 'markers',
+          marker: { color: 'red' },
+          text: mcuData.receive.map((d) => d.data),
+          hoverinfo: 'x+text'
+        };
+
         traces.push(receiveTrace);
-        traces.push(rttTrace);
       }
 
-      if (unmatchedSent.length > 0) {
-        const unmatchedSentTrace = {
-          name: 'Unmatched Sent',
-          x: unmatchedSent.map((d) => d.expectedReceivedTS),
-          y: Array(unmatchedSent.length).fill(0),
-          mode: 'markers',
-          marker: { color: 'LightSkyBlue' },
-
-          text: unmatchedSent.map((d) => d.data),
-          hoverinfo: 'x+text'
-        };
-
-        traces.push(unmatchedSentTrace);
-      }
-
-      if (unmatchedReceive.length > 0) {
-        const unmatchedReceiveTrace = {
-          x: unmatchedReceive.map((d) => d.actuallyReadTS),
-          y: Array(unmatchedReceive.length).fill(0),
-          mode: 'markers',
-          marker: { color: 'purple' },
-          name: 'Unmatched Receive',
-          text: unmatchedReceive.map((d) => d.data),
-          hoverinfo: 'x+text'
-
-        };
-
-        traces.push(unmatchedReceiveTrace);
-      }
-
+      // Stats trace
       if (this.data.stats && this.data.stats.length > 0) {
         const statsTrace = {
           name: 'Stats',
@@ -473,7 +394,6 @@ class PlotData {
           y: Array(this.data.stats.length).fill(0),
           mode: 'markers',
           marker: { color: 'green' },
-
           text: this.data.stats.map((d) => d.data),
           hoverinfo: 'x+text'
         };
@@ -481,10 +401,10 @@ class PlotData {
         traces.push(statsTrace);
       }
 
+      // Event annotations
       const layout = {
-        title: `RTT MCU ${mcu}`,
+        title: `MCU ${mcu}`,
         xaxis: { title: 'Timestamp' },
-        // yaxis: { title: 'Events', tickvals: [0], ticktext: ['Event'] },
         annotations: this.data.Events
           .filter((event) => event.mcu === mcu || event.mcu === 'all')
           .map((event, index) => ({
@@ -508,7 +428,6 @@ class PlotData {
     return rttGraphs;
   }
 }
-
 
 class GatherConfig {
   constructor(configs, line_num, recent_lines, logname) {
