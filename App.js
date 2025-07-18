@@ -337,7 +337,8 @@ const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange,
           <PlotlyChart
             key={chart.key}
             title={chart.title}
-            data={chart.data.map(t => ({ ...t, type: t.mode === 'markers' ? 'scatter' : 'scattergl', mode: t.mode || 'lines' }))}
+            // Do not use scattergl as it will fail in Chrome and Edge
+            data={chart.data.map(t => ({ ...t, type: t.mode === 'markers' ? 'scatter' : 'scatter', mode: t.mode || 'lines' }))}
             layout={chart.layout}
             theme={theme}
             onRelayout={handleRelayout}
