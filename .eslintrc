@@ -1,0 +1,49 @@
+{
+  "env": {
+    "node": true,
+    "browser": true,
+    "commonjs": true,
+    "jquery": true
+  },
+  "extends": "eslint:recommended",
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "script"
+  },
+  "rules": {
+    "indent": [
+      "error",
+      4,
+      {
+        "VariableDeclarator": 1
+      }
+    ],
+    "no-tabs": "error",
+    "max-len": [
+      "warn",
+      {
+        "code": 160
+      }
+    ],
+    "curly": [
+      "error",
+      "multi-line"
+    ],
+    "no-template-curly-in-string": "warn",
+    "capitalized-comments": "off",
+    "spaced-comment": "off",
+    "prefer-reflect": "off",
+    "unicorn/catch-error-name": "off",
+    "unicorn/prevent-abbreviations": "off",
+    "no-unused-expressions": "warn",
+    "no-await-in-loop": "warn",
+    "unicorn/prefer-string-slice": "warn",
+    "require-atomic-updates": "warn",
+    "unicorn/no-nested-ternary": "warn",
+    "prefer-named-capture-group": "warn",
+    "unicorn/prefer-number-properties": "warn",
+    "unicorn/no-fn-reference-in-iterator": "warn",
+    "unicorn/better-regex": "warn",
+    "unicorn/prefer-optional-catch-binding": "warn"
+  }
+}

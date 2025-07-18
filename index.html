@@ -1,58 +1,34 @@
 <!DOCTYPE html>
-<html>
-  <head>
+<html lang="en">
+<head>
     <meta charset="UTF-8">
-    <script language="JavaScript" type="text/javascript" src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <script language="JavaScript" type="text/javascript" src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
-    <script language="JavaScript" type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
-    <script language="JavaScript" type="text/javascript" src="./script.js"></script>
-    <style>
-      #containerHeater {
-        display: flex;
-        align-items: center;
-      }
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Klipper Log Visualizer</title>
 
-      #fieldSelectHeater {
-        margin-right: 20px;
-      }
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
 
-      #containerCustomHeater {
-        display: none;
-      }
-    </style>
-    <title>Graph Klipper Stats</title>
-  </head>
-  <body>
-    <h1>Graph Klipper Stats</h1>
-    <div>
-      <p>This webpage uses the logic of Klipper's <a href="https://github.com/Klipper3d/klipper/blob/master/scripts/graphstats.py" target="_blank">graphstats.py</a> to analyse a <code>klippy.log</code> and display the results in graphs. This is a direct transformation of the Python script and thus based on the original work of Kevin O'Connor. </p>
-      <p>For the sources and license information see <a href="https://github.com/Sineos/sineos.github.io" target="_blank">the GH repository</a>
-      </p>
-      <p>Just browse for the <code>klippy.log</code> using below button. Heater(s) for the temperature graph can be chosen with the drop-down </p>
-    </div>
-    <div>
-      <input type="file" id="fileInput">
-    </div>
-    <div id="containerHeater">
-      <label for="fieldSelectHeater">Select a Heater:&nbsp;</label>
-      <select id="fieldSelectHeater">
-        <option value="extruder, heater_bed">Extruder and Bed</option>
-        <option value="extruder">Extruder</option>
-        <option value="heater_bed">Bed</option>
-        <option value="custom">Custom</option>
-      </select>
-      <div id="containerCustomHeater">
-        <label for="inputCustomHeater">Custom Heater:&nbsp;</label>
-        <input type="text" id="inputCustomHeater">
-      </div>
-    </div>
-    <div>
-      <input name="buttonProcess" type="button" id="buttonProcess" value="Process Log" />
-    </div>
-    <div id="plotDiv"></div>
-    <div id="plotDiv2"></div>
-    <div id="plotDiv3"></div>
-    <div id="plotDiv4"></div>
-    <script></script>
-  </body>
+    <!-- Libraries from CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.28.1/babel.min.js"></script>
+
+    <!-- Plotly.js v3 and MathJax for improved rendering -->
+    <script>
+        // Required configuration for MathJax v3 with Plotly.js
+        window.MathJax = {
+            svg: {
+                fontCache: 'global'
+            }
+        };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"></script>
+    <script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>
+
+</head>
+<body>
+    <div id="root"></div>
+    <script src="logParser.js"></script>
+    <script type="text/babel" src="App.js"></script>
+</body>
 </html>

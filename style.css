@@ -1,0 +1,407 @@
+/* =============== GLOBAL STYLES =============== */
+/* =============== THEME SYSTEM =============== */
+/* Light theme (default) */
+:root {
+    --bg-color: #f5f5f5;
+    --text-color: #212121;
+    --primary-color: #0288d1;
+    --primary-color-rgb: 2, 136, 209;
+    --secondary-color: #fbc02d;
+    --surface-color: #ffffff;
+    --border-color: #e0e0e0;
+    --error-bg: #ffebee;
+    --error-text: #c62828;
+    --grid-color: rgba(0, 0, 0, 0.1);
+    --zeroline-color: rgba(0, 0, 0, 0.25);
+}
+
+/* Dark theme */
+.dark-mode {
+    --bg-color: #1e1e1e;
+    --text-color: #f5f5f5;
+    --primary-color: #4fc3f7;
+    --primary-color-rgb: 79, 195, 247;
+    --secondary-color: #ffca28;
+    --surface-color: #2a2a2a;
+    --border-color: #444;
+    --error-bg: #3e2723;
+    --error-text: #ef5350;
+    --grid-color: rgba(255, 255, 255, 0.3);
+    --zeroline-color: rgba(255, 255, 255, 0.45);
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+        Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+/* =============== LAYOUT STRUCTURE =============== */
+.app-container {
+    width: 98vw;
+    max-width: none;
+    margin: 0 auto;
+    padding: 0 1vw;
+    box-sizing: border-box;
+}
+
+.app-header {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 15px 0;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+    text-align: center;
+    position: relative;
+}
+
+.header-content h1 {
+    color: var(--primary-color);
+    margin: 0 0 8px 0;
+    font-size: 2em;
+}
+
+.header-content p {
+    margin: 0;
+    font-size: 1em;
+    opacity: 0.9;
+}
+
+.dashboard {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.dashboard-header {
+    padding: 0 5px;
+}
+
+.dashboard-header h2 {
+    margin: 0 0 15px 0;
+    font-size: 1.6em;
+    color: var(--primary-color);
+}
+
+/* =============== COMPONENT STYLES =============== */
+/* File Uploader */
+.file-uploader {
+    padding: 30px;
+    border: 3px dashed var(--border-color);
+    border-radius: 10px;
+    background-color: var(--surface-color);
+    text-align: center;
+    width: 100%;
+    max-width: 800px;
+    margin: 15px auto;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-sizing: border-box;
+}
+
+.file-uploader:hover {
+    background-color: var(--bg-color);
+    transform: translateY(-3px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+.file-uploader > * {
+    pointer-events: none;
+}
+
+.file-uploader input[type="file"] {
+    display: none;
+}
+
+.file-uploader.drag-over {
+    border-color: var(--primary-color);
+    background-color: rgba(var(--primary-color-rgb), 0.1);
+}
+
+/* Status Messages */
+.status-message, .error-message {
+    margin: 15px auto;
+    padding: 12px;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 800px;
+    text-align: center;
+    box-sizing: border-box;
+}
+
+.status-message {
+    font-size: 1.1em;
+    color: var(--secondary-color);
+}
+
+.error-message {
+    color: var(--error-text);
+    background-color: var(--error-bg);
+    border: 1px solid var(--error-text);
+}
+
+/* Theme Switcher */
+.header-controls {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    z-index: 10;
+}
+
+/* Style for the GitHub logo link */
+.github-link svg {
+    display: block;
+    fill: var(--text-color);
+    transition: fill 0.2s ease-in-out;
+}
+
+.github-link:hover svg {
+    fill: var(--primary-color);
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 24px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #555;
+    transition: .4s;
+    border-radius: 24px;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked + .slider {
+    background-color: var(--primary-color);
+}
+
+input:checked + .slider:before {
+    transform: translateX(24px);
+}
+
+.file-session-container {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px 20px;
+    background-color: var(--surface-color);
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    margin-bottom: 20px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+}
+
+.session-selector {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.session-selector select option[disabled] {
+    color: #9e9e9e;
+    font-style: italic;
+}
+
+.dark-mode .session-selector select option[disabled] {
+    color: #757575;
+}
+
+.file-session-container label {
+    font-weight: 500;
+    color: var(--primary-color);
+}
+
+.file-session-container select {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 8px 12px;
+    font-size: 0.9em;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+    padding-right: 2.5rem;
+}
+
+.dark-mode .file-session-container select {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+}
+
+.file-session-container select:hover {
+    border-color: var(--primary-color);
+}
+
+.file-session-container select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb), 0.2);
+}
+
+.single-session-text {
+    font-style: italic;
+    opacity: 0.8;
+}
+
+.sync-zoom-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sync-zoom-toggle label {
+    font-weight: 500;
+    font-size: 0.9em;
+    color: var(--text-color);
+    cursor: pointer;
+}
+
+.sync-zoom-toggle input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 38px;
+    height: 20px;
+    border-radius: 20px;
+    background-color: #ccc;
+    outline: none;
+    cursor: pointer;
+    position: relative;
+    transition: background-color 0.3s;
+}
+
+.dark-mode .sync-zoom-toggle input[type="checkbox"] {
+    background-color: #555;
+}
+
+.sync-zoom-toggle input[type="checkbox"]::before {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background-color: white;
+    top: 2px;
+    left: 2px;
+    transition: transform 0.3s;
+}
+
+.sync-zoom-toggle input[type="checkbox"]:checked {
+    background-color: var(--primary-color);
+}
+
+.sync-zoom-toggle input[type="checkbox"]:checked::before {
+    transform: translateX(18px);
+}
+
+
+/* Plotly Chart Container */
+.plotly-chart-container {
+    height: 350px;
+    width: 100%;
+    background-color: var(--surface-color);
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+    margin-bottom: 10px;
+    box-sizing: border-box;
+}
+
+/* =============== PLOTLY OVERRIDES =============== */
+.plotly .g-gtitle text,
+.plotly .g-xtitle,
+.plotly .g-ytitle,
+.plotly .xtick text,
+.plotly .ytick text,
+.plotly .legendtext {
+    fill: var(--text-color) !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+        Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
+}
+
+.plotly .g-gtitle text {
+    font-weight: 600 !important;
+}
+
+/* =============== RESPONSIVE DESIGN =============== */
+@media (max-width: 767px) {
+    .app-header {
+        padding: 10px 0;
+    }
+
+    .header-content h1 {
+        font-size: 1.7em;
+    }
+
+    .header-content p {
+        font-size: 0.92em;
+    }
+
+    .header-controls {
+        position: static;
+        margin-top: 12px;
+        justify-content: center;
+        width: 100%;
+    }
+
+    .file-uploader {
+        padding: 20px;
+        margin: 10px auto;
+    }
+
+    .dashboard-header h2 {
+        font-size: 1.5em;
+    }
+
+    .theme-switcher {
+        position: static;
+        margin-top: 12px;
+        justify-content: center;
+        width: 100%;
+    }
+}
