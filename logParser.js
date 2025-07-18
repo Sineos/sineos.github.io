@@ -230,6 +230,14 @@ function parseKlipperLog(logContent) {
         }
     });
 
+    for (const session of result.sessions) {
+        for (const deviceType in session.devices) {
+            for (const deviceName of session.devices[deviceType]) {
+                result.devices[deviceType].add(deviceName);
+            }
+        }
+    }
+	
     const allRawMetrics = result.sessions.flatMap(s => s.rawMetrics);
 
     if (allRawMetrics.length === 0) {
@@ -348,13 +356,7 @@ function parseKlipperLog(logContent) {
     });
 
     result.events = result.sessions.flatMap(s => s.events).sort((a, b) => a.time - b.time);
-    for (const session of result.sessions) {
-        for (const deviceType in session.devices) {
-            for (const deviceName of session.devices[deviceType]) {
-                result.devices[deviceType].add(deviceName);
-            }
-        }
-    }
+
     for (const key in result.devices) {
         result.devices[key] = Array.from(result.devices[key]);
     }
