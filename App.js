@@ -312,7 +312,7 @@ const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange,
     const freqData = CHART_TEMPLATES.FREQUENCIES.data(metrics);
     if (freqData.length > 0) definitions.push({ key: 'freq', ...CHART_TEMPLATES.FREQUENCIES, layout: { ...baseLayout, ...CHART_TEMPLATES.FREQUENCIES.layout }, data: freqData });
     if (devices.can) devices.can.forEach(can => { if(metrics[`${can}:rx_error`]) definitions.push({ key: `can-${can}`, ...CHART_TEMPLATES.CAN_BUS(can), layout: { ...baseLayout, ...CHART_TEMPLATES.CAN_BUS(can).layout }, data: CHART_TEMPLATES.CAN_BUS(can).data(metrics) }) });
-    const advancedMetrics = ['srtt', 'rttvar', 'rto', 'ready_bytes', 'upcoming_bytes'];
+    const advancedMetrics = ['srtt', 'rttvar', 'rto', 'ready_bytes', 'bytes_retransmit', 'bytes_invalid'];
     if (devices.mcu) devices.mcu.forEach(mcu => advancedMetrics.forEach(metric => { if (metrics[`${mcu}:${metric}`]) { const template = CHART_TEMPLATES.ADVANCED_MCU(mcu, metric); definitions.push({ key: `adv-${mcu}-${metric}`, ...template, layout: { ...baseLayout, ...template.layout }, data: template.data(metrics) }); } }));
 
     return definitions;
