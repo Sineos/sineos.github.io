@@ -204,12 +204,86 @@ function getBaseLayout(theme) {
  * Individual Chart definitions
  */
 const CHART_TEMPLATES = {
-  SYSTEM_LOAD: { title: 'System load utilization', layout: { yaxis: { title: 'Load (% of a core)', tickformat: ',.2r', automargin: true }, yaxis2: { title: 'Available memory (KB)', overlaying: 'y', side: 'right', showgrid: false, tickformat: ',.3s', automargin: true } }, data: (metrics) => [ { ...metrics.sysload, name: 'System Load', yaxis: 'y1', line: { color: 'cyan' } }, { ...metrics['host:process_time'], name: 'Process Time', yaxis: 'y1', line: { color: 'red' } }, { ...metrics.memavail, name: 'System Memory', yaxis: 'y2', line: { color: 'yellow' } } ] },
-  MCU_PERFORMANCE: (mcu) => ({ title: `MCU '${mcu}' performance`, layout: { yaxis: { title: 'Usage (%)', rangemode: 'tozero', tickformat: ',.2r', automargin: true } }, data: (metrics) => [ { ...metrics[`${mcu}:bandwidth`], name: 'Bandwidth', line: { color: 'green' } }, { ...metrics[`${mcu}:load`], name: 'MCU Load', line: { color: 'red' } }, { ...metrics['host:buffer'], name: 'Host Buffer', line: { color: 'cyan' } }, { ...metrics[`${mcu}:mcu_awake`], name: 'Awake Time', y: metrics[`${mcu}:mcu_awake`]?.y.map(v => v / 5.0 * 100), line: { color: 'yellow' } } ] }),
-  TEMPERATURE: (heater) => ({ title: `Temperature of ${heater}`, layout: { yaxis: { title: 'Temperature', tickformat: ',.2r', automargin: true }, yaxis2: { title: 'PWM', overlaying: 'false', side: 'right', range: [0, 1], autorange: false, showgrid: false, tickformat: ',.0%', automargin: true } }, data: (metrics) => { const traces = [ { ...metrics[`${heater}:temp`], name: `${heater} Temp`, yaxis: 'y1', line: { color: 'orange' } } ]; if (metrics[`${heater}:target`]) traces.push({ ...metrics[`${heater}:target`], name: `${heater} Target`, yaxis: 'y1', line: { color: 'blue' } }); if (metrics[`${heater}:pwm`]) traces.push({ ...metrics[`${heater}:pwm`], name: `${heater} PWM`, yaxis: 'y2', line: { color: 'darkgray', width: 0.8, opacity: 0.5, dash: 'dash' } }); return traces; } }),
-  FREQUENCIES: { title: 'MCU frequencies', layout: { yaxis: { title: 'Microsecond deviation', tickformat: ',.2r', automargin: true } }, data: (metrics) => Object.keys(metrics).filter(k => k.endsWith('_deviation')).map(key => ({ ...metrics[key], name: metrics[key].label, mode: 'markers' })) },
-  CAN_BUS: (can) => ({ title: `CAN Bus State: ${can}`, layout: { yaxis: { title: 'Error Count', rangemode: 'tozero', tickformat: ',.2r', automargin: true } }, data: (metrics) => [ { ...metrics[`${can}:rx_error`], name: 'RX Errors', line: { shape: 'hv' } }, { ...metrics[`${can}:tx_error`], name: 'TX Errors', line: { shape: 'hv' } }, { ...metrics[`${can}:tx_retries`], name: 'TX Retries', line: { shape: 'hv' } } ] }),
-  ADVANCED_MCU: (mcu, metric) => ({ title: `MCU ${metric} - ${mcu}`, layout: { yaxis: { title: metric, tickformat: ',.2r', automargin: true } }, data: (metrics) => [{ ...metrics[`${mcu}:${metric}`], name: `${metric} - ${mcu}`, line: { color: 'blue' } }] })
+    SYSTEM_LOAD: {
+        title: 'System load utilization',
+        layout: {
+            yaxis: { title: 'Load (% of a core)', tickformat: ',.2r', automargin: true },
+            yaxis2: { title: 'Available memory (KB)', overlaying: 'y', side: 'right', showgrid: false, tickformat: ',.3s', automargin: true }
+        },
+        data: (metrics) => [
+            { ...metrics.sysload, name: 'System Load', yaxis: 'y1', line: { color: 'cyan' } },
+            { ...metrics['host:process_time'], name: 'Process Time', yaxis: 'y1', line: { color: 'red' } },
+            { ...metrics.memavail, name: 'System Memory', yaxis: 'y2', line: { color: 'yellow' } }
+        ]
+    },
+
+    MCU_PERFORMANCE: (mcu) => ({
+        title: `MCU '${mcu}' performance`,
+        layout: {
+            yaxis: { title: 'Usage (%)', rangemode: 'tozero', tickformat: ',.2r', automargin: true }
+        },
+        data: (metrics) => {
+            const traces = [
+                { ...metrics[`${mcu}:bandwidth`], name: 'Bandwidth', yaxis: 'y1', line: { color: 'green' } },
+                { ...metrics[`${mcu}:load`], name: 'MCU Load', yaxis: 'y1', line: { color: 'red' } },
+                { ...metrics['host:buffer'], name: 'Host Buffer', yaxis: 'y1', line: { color: 'cyan' } },
+                { ...metrics[`${mcu}:mcu_awake`], name: 'Awake Time', yaxis: 'y1', y: metrics[`${mcu}:mcu_awake`]?.y.map(v => v / 5.0 * 100), line: { color: 'yellow' } }
+            ];
+            return traces;
+        }
+    }),
+
+    TEMPERATURE: (heater) => ({
+        title: `Temperature of ${heater}`,
+        layout: {
+            yaxis: { title: 'Temperature', tickformat: ',.2r', automargin: true },
+            yaxis2: { title: 'PWM', overlaying: 'y', side: 'right', range: [0, 1], autorange: false, showgrid: false, tickformat: ',.0%', automargin: true }
+        },
+        data: (metrics) => {
+            const traces = [
+                { ...metrics[`${heater}:temp`], name: `${heater} Temp`, yaxis: 'y1', line: { color: 'orange' } }
+            ];
+            if (metrics[`${heater}:target`]) {
+                traces.push({ ...metrics[`${heater}:target`], name: `${heater} Target`, yaxis: 'y1', line: { color: 'blue' } });
+            }
+            if (metrics[`${heater}:pwm`]) {
+                traces.push({ ...metrics[`${heater}:pwm`], name: `${heater} PWM`, yaxis: 'y2', line: { color: 'darkgray', width: 0.8, opacity: 0.5, dash: 'dash' } });
+            }
+            return traces;
+        }
+    }),
+
+    TEMP_SENSOR: (sensor) => ({
+        title: `Temperature of Sensor: ${sensor}`,
+        layout: { yaxis: { title: 'Temperature (°C)', tickformat: ',.2r', automargin: true } },
+        data: (metrics) => [
+            { ...metrics[`${sensor}:temp`], name: `${sensor} Temp`, line: { color: 'purple' } }
+        ]
+    }),
+
+    FREQUENCIES: {
+        title: 'MCU frequencies',
+        layout: { yaxis: { title: 'Microsecond deviation', tickformat: ',.2r', automargin: true } },
+        data: (metrics) => Object.keys(metrics)
+            .filter(k => k.endsWith('_deviation'))
+            .map(key => ({ ...metrics[key], name: metrics[key].label, mode: 'markers' }))
+    },
+
+    CAN_BUS: (can) => ({
+        title: `CAN Bus State: ${can}`,
+        layout: { yaxis: { title: 'Error Count', rangemode: 'tozero', tickformat: ',.2r', automargin: true } },
+        data: (metrics) => [
+            { ...metrics[`${can}:rx_error`], name: 'RX Errors', line: { shape: 'hv' } },
+            { ...metrics[`${can}:tx_error`], name: 'TX Errors', line: { shape: 'hv' } },
+            { ...metrics[`${can}:tx_retries`], name: 'TX Retries', line: { shape: 'hv' } }
+        ]
+    }),
+
+    ADVANCED_MCU: (mcu, metric) => ({
+        title: `MCU ${metric} - ${mcu}`,
+        layout: { yaxis: { title: metric, tickformat: ',.2r', automargin: true } },
+        data: (metrics) => [{ ...metrics[`${mcu}:${metric}`], name: `${metric} - ${mcu}`, line: { color: 'blue' } }]
+    })
 };
 
 /**
@@ -309,7 +383,17 @@ const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange,
     if (metrics.sysload) definitions.push({ key: 'sysload', ...CHART_TEMPLATES.SYSTEM_LOAD, layout: { ...baseLayout, ...CHART_TEMPLATES.SYSTEM_LOAD.layout }, data: CHART_TEMPLATES.SYSTEM_LOAD.data(metrics) });
     if (devices.mcu) devices.mcu.forEach(mcu => { if(metrics[`${mcu}:load`]) definitions.push({ key: `mcu-${mcu}`, ...CHART_TEMPLATES.MCU_PERFORMANCE(mcu), layout: { ...baseLayout, ...CHART_TEMPLATES.MCU_PERFORMANCE(mcu).layout }, data: CHART_TEMPLATES.MCU_PERFORMANCE(mcu).data(metrics) }) });
     if (devices.heaters) devices.heaters.forEach(heater => { if(metrics[`${heater}:temp`]) definitions.push({ key: `heater-${heater}`, ...CHART_TEMPLATES.TEMPERATURE(heater), layout: { ...baseLayout, ...CHART_TEMPLATES.TEMPERATURE(heater).layout }, data: CHART_TEMPLATES.TEMPERATURE(heater).data(metrics) }) });
-    const freqData = CHART_TEMPLATES.FREQUENCIES.data(metrics);
+    if (devices.temp_sensors) devices.temp_sensors.forEach(sensor => {
+      if(metrics[`${sensor}:temp`]) {
+        definitions.push({
+          key: `sensor-${sensor}`,
+          ...CHART_TEMPLATES.TEMP_SENSOR(sensor),
+          layout: { ...baseLayout, ...CHART_TEMPLATES.TEMP_SENSOR(sensor).layout },
+          data: CHART_TEMPLATES.TEMP_SENSOR(sensor).data(metrics)
+        })
+      }
+    });  
+  const freqData = CHART_TEMPLATES.FREQUENCIES.data(metrics);
     if (freqData.length > 0) definitions.push({ key: 'freq', ...CHART_TEMPLATES.FREQUENCIES, layout: { ...baseLayout, ...CHART_TEMPLATES.FREQUENCIES.layout }, data: freqData });
     if (devices.can) devices.can.forEach(can => { if(metrics[`${can}:rx_error`]) definitions.push({ key: `can-${can}`, ...CHART_TEMPLATES.CAN_BUS(can), layout: { ...baseLayout, ...CHART_TEMPLATES.CAN_BUS(can).layout }, data: CHART_TEMPLATES.CAN_BUS(can).data(metrics) }) });
     const advancedMetrics = ['srtt', 'rttvar', 'rto', 'ready_bytes', 'bytes_retransmit', 'bytes_invalid'];
