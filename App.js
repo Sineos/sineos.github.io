@@ -5,11 +5,19 @@
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 /**
- * Creates a self-contained Web Worker from the globally available
- * parsing functions in logParser.js.
+ * Creates a self-contained Web Worker that parses the log, serves
+ * line chunks, and filters data on demand.
  */
 function createWorkerBlobURL() {
     const workerLogicString = `
+        // Store full log data in the worker's scope
+        let logLines = [];
+        let fullMetrics = {};
+        let allEvents = [];
+        let allDevices = {};
+        let allSessions = [];
+
+        // Bring in parsing logic
         const LOGIC_CONSTANTS = {
             KEYS_TO_PREFIX: new Set(${JSON.stringify(Array.from(LOGIC_CONSTANTS.KEYS_TO_PREFIX))}),
             MAXBANDWIDTH: ${LOGIC_CONSTANTS.MAXBANDWIDTH},
@@ -17,17 +25,115 @@ function createWorkerBlobURL() {
             STATS_INTERVAL: ${LOGIC_CONSTANTS.STATS_INTERVAL},
             TASK_MAX: ${LOGIC_CONSTANTS.TASK_MAX}
         };
-
         const findPrintResets = ${findPrintResets.toString()};
         const parseKlipperLog = ${parseKlipperLog.toString()};
 
+        // Handle messages from the main thread
         self.onmessage = (event) => {
-            const { logContent } = event.data;
-            try {
-                const processedData = parseKlipperLog(logContent);
-                self.postMessage({ status: 'success', data: processedData });
-            } catch (error) {
-                self.postMessage({ status: 'error', message: error.message });
+            const { type, data } = event.data;
+
+            switch (type) {
+                case 'parse':
+                    try {
+                        const { logContent } = data;
+                        const processedData = parseKlipperLog(logContent);
+                        
+                        // Store all data within the worker
+                        logLines = processedData.logLines;
+                        fullMetrics = processedData.metrics;
+                        allEvents = processedData.events;
+                        allDevices = processedData.devices;
+                        allSessions = processedData.sessions;
+
+                        // Send initial data (all sessions) and metadata to main thread
+                        self.postMessage({ 
+                            status: 'success', 
+                            type: 'parseResult', 
+                            data: {
+                                metrics: fullMetrics,
+                                events: allEvents,
+                                devices: allDevices,
+                                sessions: allSessions
+                            } 
+                        });
+                    } catch (error) {
+                        self.postMessage({ status: 'error', message: error.message });
+                    }
+                    break;
+
+                case 'filter_session':
+                    try {
+                        const { sessionId } = data;
+                        if (sessionId === 'all') {
+                            self.postMessage({
+                                status: 'success',
+                                type: 'filterResult',
+                                data: { metrics: fullMetrics, events: allEvents, devices: allDevices }
+                            });
+                            return;
+                        }
+
+                        const session = allSessions.find(s => s.id == sessionId);
+                        if (!session) throw new Error('Session not found');
+
+                        const { startTime, endTime } = session;
+                        const start = new Date(startTime).getTime();
+                        const end = endTime ? new Date(endTime).getTime() : Number.MAX_SAFE_INTEGER;
+                        const filteredMetrics = {};
+                        
+                        const metricKeys = Object.keys(fullMetrics);
+                        for (let i = 0, len = metricKeys.length; i < len; i++) {
+                            const key = metricKeys[i];
+                            const metric = fullMetrics[key];
+                            const newX = [], newY = [], newLines = [];
+                            const metricX = metric.x;
+                            const metricY = metric.y;
+                            const metricLines = metric.lines;
+
+                            for (let j = 0, dataLen = metricX.length; j < dataLen; j++) {
+                                const time = new Date(metricX[j]).getTime();
+                                if (time >= start && time <= end) {
+                                    newX.push(metricX[j]);
+                                    newY.push(metricY[j]);
+                                    if (metricLines) newLines.push(metricLines[j]);
+                                }
+                            }
+                            if (newX.length > 0) {
+                                filteredMetrics[key] = { ...metric, x: newX, y: newY, lines: newLines };
+                            }
+                        }
+
+                        self.postMessage({
+                            status: 'success',
+                            type: 'filterResult',
+                            data: { metrics: filteredMetrics, events: session.events, devices: session.devices }
+                        });
+
+                    } catch (error) {
+                         self.postMessage({ status: 'error', message: 'Failed to filter session.' });
+                    }
+                    break;
+
+                case 'fetch_lines':
+                    try {
+                        const { line, context } = data;
+                        const start = Math.max(0, line - context);
+                        const end = Math.min(logLines.length, line + context + 1);
+                        const slice = logLines.slice(start, end);
+                        
+                        self.postMessage({
+                            status: 'success',
+                            type: 'logChunk',
+                            data: {
+                                lines: slice,
+                                highlight: line,
+                                offset: start
+                            }
+                        });
+                    } catch (error) {
+                        self.postMessage({ status: 'error', message: 'Failed to fetch log lines.' });
+                    }
+                    break;
             }
         };
     `;
@@ -61,7 +167,7 @@ function normalizeAxis(axis) {
 /**
  * Plotly chart component.
  */
-const PlotlyChart = React.memo(({ data, layout, title, theme, onRelayout, xAxisRange }) => {
+const PlotlyChart = React.memo(({ data, layout, title, theme, onRelayout, xAxisRange, onPointClick }) => {
     const chartRef = useRef(null);
 
     const finalLayout = useMemo(() => {
@@ -100,26 +206,39 @@ const PlotlyChart = React.memo(({ data, layout, title, theme, onRelayout, xAxisR
 
     useEffect(() => {
         if (chartRef.current && data) {
+            const plotDiv = chartRef.current;
             const plotConfig = { responsive: true, displayModeBar: true, displaylogo: false, doubleClick: 'reset+autosize', modeBarButtonsToRemove: ['lasso2d', 'select2d'] };
-            Plotly.react(chartRef.current, data, finalLayout, plotConfig);
+            
+            // Draw a new plot, which purges the old one
+            Plotly.newPlot(plotDiv, data, finalLayout, plotConfig);
+
+            // Define handlers
+            const handleRelayout = (eventData) => {
+                if (onRelayout && Object.keys(eventData).length > 0 && !eventData['dragmode']) {
+                     onRelayout(eventData);
+                }
+            };
+            const handleClick = (eventData) => {
+                if (onPointClick && eventData.event.button === 1 && eventData.points.length > 0) {
+                    const point = eventData.points[0];
+                    if (point.customdata !== undefined) {
+                        eventData.event.preventDefault();
+                        onPointClick(point.customdata);
+                    }
+                }
+            };
+
+            // Attach listeners to the new plot instance
+            plotDiv.on('plotly_relayout', handleRelayout);
+            plotDiv.on('plotly_click', handleClick);
+
+            // Return a cleanup function to remove listeners before the next effect run
+            return () => {
+                plotDiv.removeAllListeners('plotly_relayout');
+                plotDiv.removeAllListeners('plotly_click');
+            };
         }
-    }, [data, finalLayout]);
-
-    useEffect(() => {
-        const plotDiv = chartRef.current;
-        if (!plotDiv || !onRelayout) return;
-
-        const handler = (eventData) => {
-            if (Object.keys(eventData).length > 0 && !eventData['dragmode']) {
-                 onRelayout(eventData);
-            }
-        };
-
-        plotDiv.on('plotly_relayout', handler);
-        return () => {
-            plotDiv.removeAllListeners('plotly_relayout');
-        };
-    }, [onRelayout]);
+    }, [data, finalLayout, onRelayout, onPointClick]); // Rerun this effect if any of these change
 
     return <div ref={chartRef} className="plotly-chart-container"></div>;
 });
@@ -135,7 +254,8 @@ function createEventMarkers(events, theme) {
 
     const sortedEvents = [...events].sort((a, b) => new Date(a.time) - new Date(b.time));
 
-    sortedEvents.forEach((event, index) => {
+    let index = 0;
+    for (const event of sortedEvents) {
         const lowerCaseText = event.text.toLowerCase();
         if (lowerCaseText.startsWith('implicit')) {
             const prevEvent = index > 0 ? sortedEvents[index - 1] : null;
@@ -143,7 +263,8 @@ function createEventMarkers(events, theme) {
                 prevEvent.text.toLowerCase().startsWith('shutdown') &&
                 new Date(prevEvent.time).getTime() === new Date(event.time).getTime())
             {
-                return;
+                index++;
+                continue;
             }
         }
 
@@ -180,7 +301,8 @@ function createEventMarkers(events, theme) {
             hovertext: hoverText,
             bgcolor: 'rgba(0,0,0,0)',
         });
-    });
+        index++;
+    }
     return { shapes, annotations };
 };
 
@@ -216,7 +338,6 @@ const CHART_TEMPLATES = {
             { ...metrics.memavail, name: 'System Memory', yaxis: 'y2', line: { color: 'yellow' } }
         ]
     },
-
     MCU_PERFORMANCE: (mcu) => ({
         title: `MCU '${mcu}' performance`,
         layout: {
@@ -232,7 +353,6 @@ const CHART_TEMPLATES = {
             return traces;
         }
     }),
-
     TEMPERATURE: (heater) => ({
         title: `Temperature of ${heater}`,
         layout: {
@@ -252,7 +372,6 @@ const CHART_TEMPLATES = {
             return traces;
         }
     }),
-
     TEMP_SENSOR: (sensor) => ({
         title: `Temperature of Sensor: ${sensor}`,
         layout: { yaxis: { title: 'Temperature (°C)', tickformat: ',.2r', automargin: true } },
@@ -260,7 +379,6 @@ const CHART_TEMPLATES = {
             { ...metrics[`${sensor}:temp`], name: `${sensor} Temp`, line: { color: 'purple' } }
         ]
     }),
-
     FREQUENCIES: {
         title: 'MCU frequencies',
         layout: { yaxis: { title: 'Microsecond deviation', tickformat: ',.2r', automargin: true } },
@@ -268,7 +386,6 @@ const CHART_TEMPLATES = {
             .filter(k => k.endsWith('_deviation'))
             .map(key => ({ ...metrics[key], name: metrics[key].label, mode: 'markers' }))
     },
-
     CAN_BUS: (can) => ({
         title: `CAN Bus State: ${can}`,
         layout: { yaxis: { title: 'Error Count', rangemode: 'tozero', tickformat: ',.2r', automargin: true } },
@@ -278,7 +395,6 @@ const CHART_TEMPLATES = {
             { ...metrics[`${can}:tx_retries`], name: 'TX Retries', line: { shape: 'hv' } }
         ]
     }),
-
     ADVANCED_MCU: (mcu, metric) => ({
         title: `MCU ${metric} - ${mcu}`,
         layout: { yaxis: { title: metric, tickformat: ',.2r', automargin: true } },
@@ -294,7 +410,7 @@ const ControlsBar = ({ filename, sessions, selectedSession, onSessionChange, syn
     return (
         <div className="file-session-container">
             <div className="session-selector">
-                <label htmlFor="session-select">{`Select session from '${filename}':`}</label>
+                <label htmlFor="session-select">Session:</label>
                 {sessions && sessions.length > 1 ? (
                     <select id="session-select" value={selectedSession} onChange={e => onSessionChange(e.target.value)}>
                         <option value="all">All Sessions</option>
@@ -319,50 +435,13 @@ const ControlsBar = ({ filename, sessions, selectedSession, onSessionChange, syn
 /**
  * Actual Chart Data Handling
  */
-const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange, syncZoom, onSyncZoomToggle }) => {
+const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange, syncZoom, onSyncZoomToggle, onPointClick }) => {
   const [xAxisRange, setXAxisRange] = useState(null);
 
   useEffect(() => {
       setXAxisRange(null);
   }, [logData, selectedSession]);
-
-  const filteredData = useMemo(() => {
-    if (!logData) return null;
-    let sourceData;
-    if (selectedSession === 'all') {
-        sourceData = {
-            metrics: logData.metrics,
-            events: logData.events,
-            devices: logData.devices
-        };
-    } else {
-        const session = logData.sessions.find(s => s.id == selectedSession);
-        if (!session) return null;
-        const { startTime, endTime } = session;
-        const start = new Date(startTime).getTime();
-        const end = endTime ? new Date(endTime).getTime() : Number.MAX_SAFE_INTEGER;
-        const filteredMetrics = {};
-        for (const key in logData.metrics) {
-            const metric = logData.metrics[key];
-            const newX = [], newY = [];
-            for (let i = 0; i < metric.x.length; i++) {
-                const time = new Date(metric.x[i]).getTime();
-                if (time >= start && time <= end) {
-                    newX.push(metric.x[i]);
-                    newY.push(metric.y[i]);
-                }
-            }
-            if (newX.length > 0) filteredMetrics[key] = { ...metric, x: newX, y: newY };
-        }
-        sourceData = {
-            metrics: filteredMetrics,
-            events: session.events,
-            devices: session.devices
-        };
-    }
-    return sourceData;
-  }, [logData, selectedSession]);
-
+  
   const handleRelayout = useCallback((eventData) => {
       if (!syncZoom) return;
       if (eventData['xaxis.range[0]']) {
@@ -373,42 +452,56 @@ const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange,
   }, [syncZoom]);
 
   const chartDefinitions = useMemo(() => {
-    if (!filteredData || !filteredData.metrics) return [];
+    if (!logData || !logData.metrics) return [];
 
-    const { metrics, events, devices } = filteredData;
+    const { metrics, events, devices } = logData;
     const { shapes, annotations } = createEventMarkers(events, theme);
     const baseLayout = { shapes, annotations, margin: { t: 50, b: 80, l: 70, r: 70 }, ...getBaseLayout(theme) };
     const definitions = [];
 
     if (metrics.sysload) definitions.push({ key: 'sysload', ...CHART_TEMPLATES.SYSTEM_LOAD, layout: { ...baseLayout, ...CHART_TEMPLATES.SYSTEM_LOAD.layout }, data: CHART_TEMPLATES.SYSTEM_LOAD.data(metrics) });
-    if (devices.mcu) devices.mcu.forEach(mcu => { if(metrics[`${mcu}:load`]) definitions.push({ key: `mcu-${mcu}`, ...CHART_TEMPLATES.MCU_PERFORMANCE(mcu), layout: { ...baseLayout, ...CHART_TEMPLATES.MCU_PERFORMANCE(mcu).layout }, data: CHART_TEMPLATES.MCU_PERFORMANCE(mcu).data(metrics) }) });
-    if (devices.heaters) devices.heaters.forEach(heater => { if(metrics[`${heater}:temp`]) definitions.push({ key: `heater-${heater}`, ...CHART_TEMPLATES.TEMPERATURE(heater), layout: { ...baseLayout, ...CHART_TEMPLATES.TEMPERATURE(heater).layout }, data: CHART_TEMPLATES.TEMPERATURE(heater).data(metrics) }) });
-    if (devices.temp_sensors) devices.temp_sensors.forEach(sensor => {
-      if(metrics[`${sensor}:temp`]) {
-        definitions.push({
-          key: `sensor-${sensor}`,
-          ...CHART_TEMPLATES.TEMP_SENSOR(sensor),
-          layout: { ...baseLayout, ...CHART_TEMPLATES.TEMP_SENSOR(sensor).layout },
-          data: CHART_TEMPLATES.TEMP_SENSOR(sensor).data(metrics)
-        })
-      }
-    });  
-  const freqData = CHART_TEMPLATES.FREQUENCIES.data(metrics);
+    if (devices.mcu) {
+        for (const mcu of devices.mcu) {
+            if(metrics[`${mcu}:load`]) definitions.push({ key: `mcu-${mcu}`, ...CHART_TEMPLATES.MCU_PERFORMANCE(mcu), layout: { ...baseLayout, ...CHART_TEMPLATES.MCU_PERFORMANCE(mcu).layout }, data: CHART_TEMPLATES.MCU_PERFORMANCE(mcu).data(metrics) })
+        }
+    }
+    if (devices.heaters) {
+        for (const heater of devices.heaters) {
+            if(metrics[`${heater}:temp`]) definitions.push({ key: `heater-${heater}`, ...CHART_TEMPLATES.TEMPERATURE(heater), layout: { ...baseLayout, ...CHART_TEMPLATES.TEMPERATURE(heater).layout }, data: CHART_TEMPLATES.TEMPERATURE(heater).data(metrics) })
+        }
+    }
+    if (devices.temp_sensors) {
+        for (const sensor of devices.temp_sensors) {
+            if(metrics[`${sensor}:temp`]) definitions.push({ key: `sensor-${sensor}`, ...CHART_TEMPLATES.TEMP_SENSOR(sensor), layout: { ...baseLayout, ...CHART_TEMPLATES.TEMP_SENSOR(sensor).layout }, data: CHART_TEMPLATES.TEMP_SENSOR(sensor).data(metrics) })
+        }
+    }
+    const freqData = CHART_TEMPLATES.FREQUENCIES.data(metrics);
     if (freqData.length > 0) definitions.push({ key: 'freq', ...CHART_TEMPLATES.FREQUENCIES, layout: { ...baseLayout, ...CHART_TEMPLATES.FREQUENCIES.layout }, data: freqData });
-    if (devices.can) devices.can.forEach(can => { if(metrics[`${can}:rx_error`]) definitions.push({ key: `can-${can}`, ...CHART_TEMPLATES.CAN_BUS(can), layout: { ...baseLayout, ...CHART_TEMPLATES.CAN_BUS(can).layout }, data: CHART_TEMPLATES.CAN_BUS(can).data(metrics) }) });
+
+    if (devices.can) {
+        for (const can of devices.can) {
+            if(metrics[`${can}:rx_error`]) definitions.push({ key: `can-${can}`, ...CHART_TEMPLATES.CAN_BUS(can), layout: { ...baseLayout, ...CHART_TEMPLATES.CAN_BUS(can).layout }, data: CHART_TEMPLATES.CAN_BUS(can).data(metrics) })
+        }
+    }
     const advancedMetrics = ['srtt', 'rttvar', 'rto', 'ready_bytes', 'bytes_retransmit', 'bytes_invalid'];
-    if (devices.mcu) devices.mcu.forEach(mcu => advancedMetrics.forEach(metric => { if (metrics[`${mcu}:${metric}`]) { const template = CHART_TEMPLATES.ADVANCED_MCU(mcu, metric); definitions.push({ key: `adv-${mcu}-${metric}`, ...template, layout: { ...baseLayout, ...template.layout }, data: template.data(metrics) }); } }));
+    if (devices.mcu) {
+        for (const mcu of devices.mcu) {
+            for (const metric of advancedMetrics) {
+                if (metrics[`${mcu}:${metric}`]) { 
+                    const template = CHART_TEMPLATES.ADVANCED_MCU(mcu, metric); 
+                    definitions.push({ key: `adv-${mcu}-${metric}`, ...template, layout: { ...baseLayout, ...template.layout }, data: template.data(metrics) }); 
+                }
+            }
+        }
+    }
 
     return definitions;
-  }, [filteredData, theme]);
+  }, [logData, theme]);
 
-  if (!filteredData) return null;
+  if (!logData) return null;
 
   return (
     <div className="dashboard">
-      <div className="dashboard-header">
-        <h2>Log Analysis Dashboard</h2>
-      </div>
       <ControlsBar
         filename={filename}
         sessions={logData.sessions}
@@ -418,16 +511,17 @@ const Dashboard = ({ logData, theme, filename, selectedSession, onSessionChange,
         onSyncZoomToggle={onSyncZoomToggle}
       />
       {chartDefinitions.filter(c => c.data && c.data.length > 0 && c.data.some(t => t && t.x && t.x.length > 0)).map((chart) => (
-          <PlotlyChart
-            key={chart.key}
-            title={chart.title}
-            // Do not use scattergl as it will fail in Chrome and Edge
-            data={chart.data.map(t => ({ ...t, type: t.mode === 'markers' ? 'scatter' : 'scatter', mode: t.mode || 'lines' }))}
-            layout={chart.layout}
-            theme={theme}
-            onRelayout={handleRelayout}
-            xAxisRange={syncZoom ? xAxisRange : null}
-          />
+          <div key={chart.key} className="plotly-wrapper">
+              <PlotlyChart
+                  title={chart.title}
+                  data={chart.data.map(t => ({ ...t, type: t.mode === 'markers' ? 'scatter' : 'scatter', mode: t.mode || 'lines', customdata: t.lines }))}
+                  layout={chart.layout}
+                  theme={theme}
+                  onRelayout={handleRelayout}
+                  xAxisRange={syncZoom ? xAxisRange : null}
+                  onPointClick={onPointClick}
+              />
+          </div>
       ))}
     </div>
   );
@@ -440,37 +534,26 @@ const FileUpload = ({ onFileLoaded }) => {
     const fileInputRef = useRef(null);
     const [isDragging, setIsDragging] = useState(false);
 
-    const handleClick = () => fileInputRef.current.click();
     const handleFileChange = (event) => {
         const file = event.target.files[0];
         if (file) onFileLoaded(file);
     };
-    const handleDragOver = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-    };
-    const handleDragEnter = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        setIsDragging(true);
-    };
-    const handleDragLeave = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
+    const handleDragOver = (e) => { e.preventDefault(); e.stopPropagation(); };
+    const handleDragEnter = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
+    const handleDragLeave = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); };
+    const handleDrop = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         setIsDragging(false);
-    };
-    const handleDrop = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        setIsDragging(false);
-        const files = event.dataTransfer.files;
-        if (files && files.length > 0) onFileLoaded(files[0]);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            onFileLoaded(e.dataTransfer.files[0]);
+        }
     };
 
     return (
         <div
             className={`file-uploader ${isDragging ? 'drag-over' : ''}`}
-            onClick={handleClick}
+            onClick={() => fileInputRef.current.click()}
             onDrop={handleDrop} onDragOver={handleDragOver}
             onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}
         >
@@ -495,10 +578,61 @@ const ThemeSwitcher = ({ theme, toggleTheme }) => (
 );
 
 /**
+ * Log Viewer Component
+ */
+const LogViewer = ({ logViewerData }) => {
+    const { lines, highlight, offset } = logViewerData;
+    const highlightRef = useRef(null);
+
+    useEffect(() => {
+        if (highlightRef.current) {
+            highlightRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
+        }
+    }, [lines, highlight, offset]);
+
+    if (!lines || lines.length === 0) {
+        return (
+            <div className="log-viewer-placeholder">
+                Middle-click a point on a chart in the Dashboard to inspect the log.
+            </div>
+        );
+    }
+
+    return (
+        <div className="log-viewer-container">
+            <pre>
+                {lines.map((line, index) => {
+                    const lineNumber = offset + index;
+                    const isHighlighted = lineNumber === highlight;
+                    return (
+                        <div
+                            key={lineNumber}
+                            ref={isHighlighted ? highlightRef : null}
+                            className={`log-line ${isHighlighted ? 'highlighted' : ''}`}
+                        >
+                            <span className="line-number">{lineNumber + 1}</span>
+                            <span className="line-content">{line}</span>
+                        </div>
+                    );
+                })}
+            </pre>
+        </div>
+    );
+};
+
+
+/**
  * Final App
  */
 const App = () => {
     const systemPrefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    
+    const getTabFromHash = () => {
+        const hash = window.location.hash.replace('#', '');
+        if (hash === 'logExplorer') return 'logExplorer';
+        return 'dashboard';
+    };
+
     const [logData, setLogData] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -506,28 +640,55 @@ const App = () => {
     const [theme, setTheme] = useState(systemPrefersDark ? 'dark' : 'light');
     const [selectedSession, setSelectedSession] = useState('all');
     const [syncZoom, setSyncZoom] = useState(true);
+    const [activeTab, setActiveTab] = useState(getTabFromHash);
+    const [logViewerData, setLogViewerData] = useState({ lines: [], highlight: -1, offset: 0 });
+    const [isFiltering, setIsFiltering] = useState(false);
     const workerRef = useRef(null);
 
     useEffect(() => {
-        document.body.classList.toggle('dark-mode', theme === 'dark');
-        document.body.classList.toggle('light-mode', theme === 'light');
+        document.body.className = theme === 'dark' ? 'dark-mode' : '';
     }, [theme]);
+
+    useEffect(() => {
+        const handleHashChange = () => {
+            setActiveTab(getTabFromHash());
+        };
+        window.addEventListener('hashchange', handleHashChange);
+        return () => window.removeEventListener('hashchange', handleHashChange);
+    }, []);
 
     useEffect(() => {
         const workerUrl = createWorkerBlobURL();
         workerRef.current = new Worker(workerUrl);
+
         workerRef.current.onmessage = (event) => {
-            const { status, data, message } = event.data;
-            setIsLoading(false);
-            if (status === 'success') {
-                setLogData(data);
-                setError(null);
-                setSelectedSession('all');
-            } else {
-                setLogData(null);
+            const { status, type, data, message } = event.data;
+            if (status === 'error') {
+                setIsLoading(false);
+                setIsFiltering(false);
                 setError(message);
+                return;
+            }
+
+            switch (type) {
+                case 'parseResult':
+                    setIsLoading(false);
+                    setLogData(data);
+                    setError(null);
+                    setSelectedSession('all');
+                    window.location.hash = 'dashboard';
+                    setLogViewerData({ lines: [], highlight: -1, offset: 0 });
+                    break;
+                case 'filterResult':
+                    setIsFiltering(false);
+                    setLogData(prev => ({...prev, ...data}));
+                    break;
+                case 'logChunk':
+                    setLogViewerData(data);
+                    break;
             }
         };
+
         return () => {
             workerRef.current.terminate();
             URL.revokeObjectURL(workerUrl);
@@ -540,51 +701,93 @@ const App = () => {
         setError(null);
         setFilename(file.name);
         const reader = new FileReader();
-        reader.onload = (e) => workerRef.current.postMessage({ logContent: e.target.result });
+        reader.onload = (e) => {
+            workerRef.current.postMessage({
+                type: 'parse',
+                data: { logContent: e.target.result }
+            });
+        };
         reader.readAsText(file);
     };
+    
+    const handleSessionChange = (sessionId) => {
+        setSelectedSession(sessionId);
+        setIsFiltering(true);
+        workerRef.current.postMessage({
+            type: 'filter_session',
+            data: { sessionId }
+        });
+    };
+
+    const handlePointClick = useCallback((lineNum) => {
+        if (lineNum !== undefined) {
+            window.location.hash = 'logExplorer';
+            workerRef.current.postMessage({
+                type: 'fetch_lines',
+                data: { line: lineNum, context: 100 } // Fetch 100 lines before and after
+            });
+        }
+    }, []); // Empty dependency array as it has no external dependencies
 
     const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
     const handleSyncZoomToggle = () => setSyncZoom(prev => !prev);
 
     return (
-        <React.Fragment>
-            <div className="app-container">
-                <header className="app-header">
-                    <div className="header-content">
-                        <h1>Klipper Log Visualizer 📈</h1>
-                        <p>Upload your <code>klippy.log</code> file to analyze printer performance.</p>
-                    </div>
-                    <div className="header-controls">
-                        <ThemeSwitcher theme={theme} toggleTheme={toggleTheme} />
-                        <a
-                            href="https://github.com/Sineos/sineos.github.io/tree/main"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="github-link"
-                            title="View on GitHub"
-                        >
-                            <svg height="24" viewBox="0 0 16 16" version="1.1" width="24" aria-hidden="true">
-                                <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
-                            </svg>
-                        </a>
-                    </div>
-                </header>
+        <div className="app-container">
+            <header className="app-header">
+                <div className="header-content">
+                    <h1>Klipper Log Visualizer 📈</h1>
+                    <p>Upload your <code>klippy.log</code> file to analyze printer performance.</p>
+                </div>
+                <div className="header-controls">
+                    <ThemeSwitcher theme={theme} toggleTheme={toggleTheme} />
+                    <a
+                        href="https://github.com/Sineos/sineos.github.io/tree/main"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="github-link"
+                        title="View on GitHub"
+                    >
+                        <svg height="24" viewBox="0 0 16 16" version="1.1" width="24" aria-hidden="true">
+                            <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                        </svg>
+                    </a>
+                </div>
+            </header>
 
+            <main>
                 <FileUpload onFileLoaded={handleFileLoaded} />
                 {isLoading && <div className="status-message">Processing log file... ⚙️</div>}
                 {error && <div className="error-message"><strong>Error:</strong> {error}</div>}
-                {logData && <Dashboard
-                    logData={logData}
-                    theme={theme}
-                    filename={filename}
-                    selectedSession={selectedSession}
-                    onSessionChange={setSelectedSession}
-                    syncZoom={syncZoom}
-                    onSyncZoomToggle={handleSyncZoomToggle}
-                />}
-            </div>
-        </React.Fragment>
+                
+                {logData && (
+                    <div className="tab-container">
+                        <div className="tab-navigation">
+                            <button onClick={() => window.location.hash = 'dashboard'} className={activeTab === 'dashboard' ? 'active' : ''}>Dashboard</button>
+                            <button onClick={() => window.location.hash = 'logExplorer'} className={activeTab === 'logExplorer' ? 'active' : ''}>Log Explorer</button>
+                        </div>
+                        <div className="tab-content">
+                            {isFiltering && <div className="filtering-overlay"><div>Filtering Data...</div></div>}
+                            {activeTab === 'dashboard' && (
+                                <Dashboard
+                                    logData={logData}
+                                    theme={theme}
+                                    filename={filename}
+                                    selectedSession={selectedSession}
+                                    onSessionChange={handleSessionChange}
+                                    syncZoom={syncZoom}
+                                    onSyncZoomToggle={handleSyncZoomToggle}
+                                    onPointClick={handlePointClick}
+                                />
+                            )}
+                            {activeTab === 'logExplorer' && (
+                                <LogViewer logViewerData={logViewerData} />
+                            )}
+                        </div>
+                    </div>
+                )}
+            </main>
+        </div>
     );
 };
 

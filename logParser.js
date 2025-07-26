@@ -46,13 +46,15 @@ function findPrintResets(data) {
     }
 
     const sample_resets = new Set();
-    Object.values(runoff_samples).forEach(value => {
+    for (const value of Object.values(runoff_samples)) {
         const stall = value[0];
         const samples = value[1];
         if (!stall) {
-            samples.forEach(sampletime => sample_resets.add(sampletime * 1000));
+            for (const sampletime of samples) {
+                sample_resets.add(sampletime * 1000);
+            }
         }
-    });
+    }
     return sample_resets;
 }
 
@@ -66,14 +68,15 @@ function parseKlipperLog(logContent) {
     };
 
     const discoveredEvents = [];
-    lines.forEach((line, index) => {
+    for (let index = 0, len = lines.length; index < len; index++) {
+        const line = lines[index];
         const startMatch = line.match(/Start printer at (.*?) \((\d+\.?\d*)\s+(\d+\.?\d*)\)/);
         if (startMatch) {
             const dateStr = startMatch[1].replace(/ /g, ' ');
             const unixTs = parseFloat(startMatch[2]);
             const uptime = parseFloat(startMatch[3]);
             discoveredEvents.push({ type: 'start', lineIndex: index, baseTimestamp: unixTs - uptime, eventTime: new Date(unixTs * 1000), eventText: `Printer Start<br>${dateStr}` });
-            return;
+            continue;
         }
 
         const rolloverMatch = line.match(/=============== Log rollover at (.*) ===============/);
@@ -87,13 +90,13 @@ function parseKlipperLog(logContent) {
                     discoveredEvents.push({ type: 'start', lineIndex: index, baseTimestamp: (rolloverTs / 1000) - nextUptime, eventTime: new Date(rolloverTs), eventText: `Log Rollover<br>${dateStr}` });
                 }
             }
-            return;
+            continue;
         }
 
         const shutdownMatch = line.match(/Transition to shutdown state: (.*)/);
         if (shutdownMatch) {
             discoveredEvents.push({ type: 'shutdown', lineIndex: index, reason: shutdownMatch[1].trim() });
-            return;
+            continue;
         }
 
         const legacyShutdownMatch = line.match(/Once the underlying issue is corrected, use the/);
@@ -103,15 +106,16 @@ function parseKlipperLog(logContent) {
                 discoveredEvents.push({ type: 'shutdown', lineIndex: index, reason });
             }
         }
-    });
+    }
 
     const startEvents = discoveredEvents.filter(e => e.type === 'start');
     const shutdownEvents = discoveredEvents.filter(e => e.type === 'shutdown');
 
     if (startEvents.length === 0) throw new Error("No valid session start ('Start printer' or 'Log rollover') found in the log file.");
 
-    startEvents.forEach((startEvent, i) => {
-        const nextStartEvent = (i + 1 < startEvents.length) ? startEvents[i + 1] : null;
+    for (let i = 0, len = startEvents.length; i < len; i++) {
+        const startEvent = startEvents[i];
+        const nextStartEvent = (i + 1 < len) ? startEvents[i + 1] : null;
         const firstShutdown = shutdownEvents.find(se => se.lineIndex > startEvent.lineIndex && (!nextStartEvent || se.lineIndex < nextStartEvent.lineIndex));
         const sessionEndLine = Math.min(nextStartEvent ? nextStartEvent.lineIndex : lines.length, firstShutdown ? firstShutdown.lineIndex : lines.length);
 
@@ -136,27 +140,27 @@ function parseKlipperLog(logContent) {
                 const absoluteTime = new Date((session.baseTimestamp + uptime) * 1000);
                 lastAbsoluteTime = absoluteTime;
 
-                const currentSample = { '#sampletime': absoluteTime, session_id: session.id };
+                const currentSample = { '#sampletime': absoluteTime, '#line': j, session_id: session.id };
                 const content = statsMatch[2].trim();
                 const parts = content.split(/\s+/);
                 let prefix = '';
-                parts.forEach(p => {
+                for (const p of parts) {
                     if (!p.includes('=')) {
-                        prefix = p; return;
+                        prefix = p; continue;
                     }
                     const [key, valueStr] = p.split('=', 2);
                     const deviceName = prefix.endsWith(':') ? prefix.slice(0, -1) : prefix;
                     let metricName = key;
                     if (prefix && LOGIC_CONSTANTS.KEYS_TO_PREFIX.has(key)) metricName = `${deviceName}:${key}`;
                     if (key === 'temp' || key === 'target') {
-                        if (valueStr.includes('/')) return;
+                        if (valueStr.includes('/')) continue;
                         if (prefix.includes('heater') || prefix.includes('extruder')) session.devices.heaters.add(deviceName);
                         else session.devices.temp_sensors.add(deviceName);
                     }
                     if (key === 'mcu_awake') session.devices.mcu.add(deviceName);
                     if (prefix.startsWith('canstat')) session.devices.can.add(deviceName);
                     currentSample[metricName] = parseFloat(valueStr);
-                });
+                }
                 if (currentSample.sysload !== undefined) session.rawMetrics.push(currentSample);
             }
         }
@@ -202,25 +206,25 @@ function parseKlipperLog(logContent) {
                         const uptime = parseFloat(statsMatch[1]);
                         const absoluteTime = new Date((implicitSession.baseTimestamp + uptime) * 1000);
                         lastImplicitTime = absoluteTime;
-                        const currentSample = { '#sampletime': absoluteTime, session_id: implicitSession.id };
+                        const currentSample = { '#sampletime': absoluteTime, '#line': j, session_id: implicitSession.id };
                         const content = statsMatch[2].trim();
                         const parts = content.split(/\s+/);
                         let prefix = '';
-                        parts.forEach(p => {
-                            if (!p.includes('=')) { prefix = p; return; }
+                        for (const p of parts) {
+                            if (!p.includes('=')) { prefix = p; continue; }
                             const [key, valueStr] = p.split('=', 2);
                             const deviceName = prefix.endsWith(':') ? prefix.slice(0, -1) : prefix;
                             let metricName = key;
                             if (prefix && LOGIC_CONSTANTS.KEYS_TO_PREFIX.has(key)) metricName = `${deviceName}:${key}`;
                             if (key === 'temp' || key === 'target') {
-                                if (valueStr.includes('/')) return;
+                                if (valueStr.includes('/')) continue;
                                 if (prefix.includes('heater') || prefix.includes('extruder')) implicitSession.devices.heaters.add(deviceName);
                                 else implicitSession.devices.temp_sensors.add(deviceName);
                             }
                             if (key === 'mcu_awake') implicitSession.devices.mcu.add(deviceName);
                             if (prefix.startsWith('canstat')) implicitSession.devices.can.add(deviceName);
                             currentSample[metricName] = parseFloat(valueStr);
-                        });
+                        }
                         if (currentSample.sysload !== undefined) implicitSession.rawMetrics.push(currentSample);
                     }
                 }
@@ -228,7 +232,7 @@ function parseKlipperLog(logContent) {
                 result.sessions.push(implicitSession);
             }
         }
-    });
+    }
 
     for (const session of result.sessions) {
         for (const deviceType in session.devices) {
@@ -237,21 +241,22 @@ function parseKlipperLog(logContent) {
             }
         }
     }
-	
+
     const allRawMetrics = result.sessions.flatMap(s => s.rawMetrics);
 
     if (allRawMetrics.length === 0) {
         if (result.sessions.length > 0) {
             result.events = result.sessions.flatMap(s => s.events).sort((a,b) => a.time - b.time);
-            result.sessions.forEach(session => {
+            for (const session of result.sessions) {
                 if (session.type === 'implicit') session.name = `Session ${session.id} (Implicit)`;
                 else {
                     let name = `Session ${session.id} (Explicit)`;
                     if (session.shutdownReason) name += ` - Shutdown: ${session.shutdownReason.substring(0, 25)}...`;
                     session.name = name;
                 }
-            });
+            }
             for (const key in result.devices) { result.devices[key] = Array.from(result.devices[key]); }
+            result.logLines = lines;
             return result;
         }
         throw new Error("No valid 'Stats' lines found in the log file.");
@@ -262,12 +267,14 @@ function parseKlipperLog(logContent) {
     const sampleResets = findPrintResets(allRawMetrics);
     let lastValues = {};
 
-    allRawMetrics.forEach(d => {
+    for (const d of allRawMetrics) {
         const time = d['#sampletime'];
+        const lineNum = d['#line'];
         for(const key in d) {
-            if (!result.metrics[key]) result.metrics[key] = { x: [], y: [] };
+            if (!result.metrics[key]) result.metrics[key] = { x: [], y: [], lines: [] };
             result.metrics[key].x.push(time);
             result.metrics[key].y.push(d[key]);
+            result.metrics[key].lines.push(lineNum);
         }
         const cputime = d.cputime;
         const lastCpu = lastValues['host_cpu'] || {time: 0, val: 0};
@@ -275,9 +282,10 @@ function parseKlipperLog(logContent) {
         if (cputime !== undefined && timedelta > 0) {
             const cpudelta = Math.max(0, Math.min(1.5, (cputime - lastCpu.val) / timedelta));
             const key = 'host:process_time';
-            if (!result.metrics[key]) result.metrics[key] = { x: [], y: [] };
+            if (!result.metrics[key]) result.metrics[key] = { x: [], y: [], lines: [] };
             result.metrics[key].x.push(time);
             result.metrics[key].y.push(cpudelta * 100);
+            result.metrics[key].lines.push(lineNum);
         }
         if(cputime !== undefined) lastValues['host_cpu'] = {time: time.getTime(), val: cputime};
 
@@ -289,11 +297,12 @@ function parseKlipperLog(logContent) {
                 : 100 * (LOGIC_CONSTANTS.MAXBUFFER - bufferTime) / LOGIC_CONSTANTS.MAXBUFFER;
         }
         const hbKey = 'host:buffer';
-        if (!result.metrics[hbKey]) result.metrics[hbKey] = { x: [], y: [] };
+        if (!result.metrics[hbKey]) result.metrics[hbKey] = { x: [], y: [], lines: [] };
         result.metrics[hbKey].x.push(time);
         result.metrics[hbKey].y.push(hostBufferValue);
+        result.metrics[hbKey].lines.push(lineNum);
 
-        result.devices.mcu.forEach(mcu => {
+        for (const mcu of result.devices.mcu) {
             const prefix = `${mcu}:`;
             const lastMcu = lastValues[mcu] || {time: 0, bw: 0};
             const mcuTimedelta = (time.getTime() - lastMcu.time) / 1000;
@@ -302,40 +311,44 @@ function parseKlipperLog(logContent) {
                 if (bw >= lastMcu.bw) {
                     const bwKey = prefix + 'bandwidth';
                     const bwDelta = 100 * (bw - lastMcu.bw) / (LOGIC_CONSTANTS.MAXBANDWIDTH * mcuTimedelta);
-                    if (!result.metrics[bwKey]) result.metrics[bwKey] = { x: [], y: [] };
+                    if (!result.metrics[bwKey]) result.metrics[bwKey] = { x: [], y: [], lines: [] };
                     result.metrics[bwKey].x.push(time);
                     result.metrics[bwKey].y.push(bwDelta);
+                    result.metrics[bwKey].lines.push(lineNum);
                 }
                 lastValues[mcu] = { ...lastMcu, bw: bw };
 
                 const load = (d[prefix+'mcu_task_avg'] || 0) + 3 * (d[prefix+'mcu_task_stddev'] || 0);
                 const loadKey = prefix + 'load';
                 const loadPerc = 100 * load / LOGIC_CONSTANTS.TASK_MAX;
-                if (!result.metrics[loadKey]) result.metrics[loadKey] = { x: [], y: [] };
+                if (!result.metrics[loadKey]) result.metrics[loadKey] = { x: [], y: [], lines: [] };
                 result.metrics[loadKey].x.push(time);
                 result.metrics[loadKey].y.push(loadPerc);
+                result.metrics[loadKey].lines.push(lineNum);
             }
             if(mcuTimedelta > 0) lastValues[mcu] = { ...lastValues[mcu], time: time.getTime() };
-        });
-    });
+        }
+    }
 
     const freqKeys = Object.keys(result.metrics).filter(k => (k.endsWith(':freq') || k.endsWith(':adj')) && !k.startsWith('host:'));
-    freqKeys.forEach(key => {
-        const values = result.metrics[key].y;
-        if (!values || values.length === 0) return;
+    for (const key of freqKeys) {
+        const sourceMetric = result.metrics[key];
+        const values = sourceMetric.y;
+        if (!values || values.length === 0) continue;
         const avg = values.reduce((a, b) => a + b, 0) / values.length;
-        if (avg === 0) return;
+        if (avg === 0) continue;
         const mhz = Math.round(avg / 1000000);
         const hz = mhz * 1000000;
         const devKey = `${key}_deviation`;
         result.metrics[devKey] = {
-            x: result.metrics[key].x,
+            x: sourceMetric.x,
             y: values.map(v => (v - hz) / mhz),
+            lines: sourceMetric.lines,
             label: `${key} (${mhz}Mhz)`
         };
-    });
+    }
 
-    result.sessions.forEach(session => {
+    for (const session of result.sessions) {
         session.dataPointCount = session.rawMetrics.length;
 
         let name;
@@ -353,13 +366,14 @@ function parseKlipperLog(logContent) {
         for (const key in session.devices) {
             session.devices[key] = Array.from(session.devices[key]);
         }
-    });
+    }
 
     result.events = result.sessions.flatMap(s => s.events).sort((a, b) => a.time - b.time);
-
+    
     for (const key in result.devices) {
         result.devices[key] = Array.from(result.devices[key]);
     }
 
+    result.logLines = lines;
     return result;
 }
